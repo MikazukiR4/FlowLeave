@@ -3,6 +3,7 @@ import io
 import os
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles.fonts import DEFAULT_FONT
 import pandas as pd
 import streamlit as st
 
@@ -14,7 +15,12 @@ st.set_page_config(
 st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ)")
 
 # -------------------------------------------------------------------------
-# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List)
+# 1. ดึง API Key จาก Environment Variable (Render Secrets)
+# -------------------------------------------------------------------------
+api_key = os.environ.get("GEMINI_API_KEY", "")
+
+# -------------------------------------------------------------------------
+# 2. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List ตามรูปแบบ Template)
 # -------------------------------------------------------------------------
 DEFAULT_EMPLOYEES = {
     "พนักงานจ้างเหมาเอกชน": [
@@ -24,9 +30,14 @@ DEFAULT_EMPLOYEES = {
         },
         {
             "name": "นางสาวณัฐธิชา  แถวทัด",
-            "position": "พนักงานจ้างปฏิบัติงานนิเทศติดตามและประเมินผล",
+            "position": (
+                "พนักงานจ้างปฏิบัติงานนิเทศติดตาม\nและประเมินผล"
+            ),
         },
-        {"name": "นางสาววิชุดา  ศรีคร้ามครัน", "position": "พนักงานจ้างปฏิบัติงานธุรการ"},
+        {
+            "name": "นางสาววิชุดา  ศรีคร้ามครัน",
+            "position": "พนักงานจ้างปฏิบัติงานธุรการ (กลุ่มพัฒนาฯ)",
+        },
         {"name": "นางสาวยัสมี  ดาโอะ", "position": "พนักงานจ้างปฏิบัติงานธุรการ"},
         {"name": "นางสาวภาวินีย์  ตันสกุล", "position": "พนักงานจ้างทำความสะอาด"},
         {"name": "นายภานุวัฒน์  จันทร์ชีวา", "position": "พนักงานจ้างปฏิบัติงานขับรถยนต์"},
@@ -51,7 +62,7 @@ DEFAULT_EMPLOYEES = {
     ],
 }
 
-# ฟังก์ชันแปลงวันที่เป็นรูปแบบไทย (เช่น 1 ม.ค. 69)
+# ฟังก์ชันแปลงวันที่เป็นรูปแบบไทย (เช่น 5 ต.ค. 26 หรือ 5 Oct 26 ตามต้นฉบับ)
 THAI_MONTH_ABBR = [
     "",
     "ม.ค.",
@@ -81,7 +92,7 @@ def format_thai_date(date_obj):
 with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
-      "1. เลือกประเภทพนักงาน\n2. เพิ่มหรือลบรายชื่อบุคลากรได้ที่เมนูด้านล่าง\n3. แก้ไขวันลาในตาราง (ช่องไหนไม่ลาให้ใส่ '-')\n4. กดสร้างและดาวน์โหลดไฟล์ Excel"
+      "1. เลือกประเภทพนักงาน\n2. เพิ่ม/ลบ รายชื่อบุคลากรได้ตามต้องการ\n3. กรอกข้อมูลวันลาในตาราง (ช่องไหนไม่ลาใส่ '-')\n4. กดสร้างและดาวน์โหลดไฟล์ Excel"
   )
 
 # เลือกเดือน ปี และประเภทพนักงาน
@@ -114,7 +125,7 @@ with col3:
   )
 
 # -------------------------------------------------------------------------
-# 2. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
+# 3. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
 # -------------------------------------------------------------------------
 if (
     "current_emp_type" not in st.session_state
@@ -144,11 +155,11 @@ st.info(
 )
 
 # -------------------------------------------------------------------------
-# 3. ตารางหลักสำหรับแก้ไขข้อมูล (Data Editor)
+# 4. ตารางหลักสำหรับแก้ไขข้อมูล (Data Editor)
 # -------------------------------------------------------------------------
 st.subheader("1. ตารางสรุปข้อมูลบุคลากรและวันลา")
 st.markdown(
-    "💡 *เคล็ดลับ: สามารถคลิกแก้ข้อมูลในตารางได้โดยตรง หรือเพิ่ม/ลบรายชื่อด้านล่างได้*"
+    "💡 *เคล็ดลับ: สามารถคลิกแก้ไขข้อมูลในตารางได้โดยตรง หรือเพิ่ม/ลบรายชื่อด้านล่างได้*"
 )
 
 edited_df = st.data_editor(
@@ -160,7 +171,7 @@ edited_df = st.data_editor(
 st.session_state.leave_data = edited_df
 
 # -------------------------------------------------------------------------
-# 4. ส่วนเพิ่ม / ลบ บุคลากร
+# 5. ส่วนเพิ่ม / ลบ บุคลากร
 # -------------------------------------------------------------------------
 with st.expander("➕ จัดการรายชื่อบุคลากร (เพิ่ม / ลบ พนักงาน)"):
   col_add, col_del = st.columns(2)
@@ -216,8 +227,10 @@ with st.expander("➕ จัดการรายชื่อบุคลาก�
       st.info("ไม่มีรายชื่อพนักงาน")
 
 # -------------------------------------------------------------------------
-# 5. ฟังก์ชันสร้าง Excel ใช้ฟอนต์ TH Sarabun PSK ตาม Template ราชการ
+# 6. ฟังก์ชันสร้าง Excel ตรงตามโครงสร้าง Template ราชการ
 # -------------------------------------------------------------------------
+DEFAULT_FONT.name = "TH SarabunPSK"
+DEFAULT_FONT.size = 14
 
 
 def generate_excel_template(df, month, year, emp_type):
@@ -225,9 +238,9 @@ def generate_excel_template(df, month, year, emp_type):
   ws = wb.active
   ws.title = "สรุปวันลา"
 
-  font_header = Font(name="TH Sarabun PSK", size=16, bold=True)
-  font_bold = Font(name="TH Sarabun PSK", size=14, bold=True)
-  font_normal = Font(name="TH Sarabun PSK", size=14)
+  font_header = Font(name="TH SarabunPSK", size=16, bold=True)
+  font_bold = Font(name="TH SarabunPSK", size=14, bold=True)
+  font_normal = Font(name="TH SarabunPSK", size=14)
 
   thin_border = Border(
       left=Side(style="thin", color="000000"),
@@ -240,16 +253,17 @@ def generate_excel_template(df, month, year, emp_type):
   )
   align_left = Alignment(horizontal="left", vertical="center")
 
+  # ปรับความกว้างคอลัมน์ให้ตรงเป๊ะกับ Template ต้นฉบับ
   col_widths = {
       "A": 6,
-      "B": 25,
-      "C": 35,
-      "D": 15,
-      "E": 15,
-      "F": 10,
-      "G": 10,
-      "H": 10,
-      "I": 18,
+      "B": 28,
+      "C": 42,
+      "D": 16,
+      "E": 16,
+      "F": 12,
+      "G": 12,
+      "H": 12,
+      "I": 22,
   }
   for col, width in col_widths.items():
     ws.column_dimensions[col].width = width
@@ -262,12 +276,12 @@ def generate_excel_template(df, month, year, emp_type):
   ws.merge_cells("A1:I1")
   ws["A1"].alignment = align_center
 
-  ws["A2"] = f"ประจำเดือน {month} {year}"
+  ws["A2"] = f"ประจำเดือน{month} {year}"
   ws["A2"].font = font_header
   ws.merge_cells("A2:I2")
   ws["A2"].alignment = align_center
 
-  # หัวตาราง 2 ชั้น
+  # หัวตาราง 2 ชั้น ตามแบบฟอร์มมาตรฐาน
   ws.merge_cells("A4:A5")
   ws["A4"] = "ที่"
   ws.merge_cells("B4:B5")
@@ -296,7 +310,7 @@ def generate_excel_template(df, month, year, emp_type):
       cell.alignment = align_center
       cell.border = thin_border
 
-  # ข้อมูลพนักงาน
+  # บรรจุข้อมูลพนักงานลงตาราง
   start_row = 6
   last_row = start_row
   for i, row in df.iterrows():
@@ -321,22 +335,12 @@ def generate_excel_template(df, month, year, emp_type):
         cell.alignment = align_left
     last_row = r
 
-  # ส่วนลงชื่อท้ายตาราง
+  # ส่วนลงชื่อท้ายตารางตามฟอร์มราชการ
   sig_row = last_row + 3
   ws.merge_cells(f"F{sig_row}:I{sig_row}")
   ws[f"F{sig_row}"] = "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
   ws[f"F{sig_row}"].font = font_normal
   ws[f"F{sig_row}"].alignment = align_center
-
-  ws.merge_cells(f"F{sig_row+1}:I{sig_row+1}")
-  ws[f"F{sig_row+1}"] = "(นายวงศ์สกุล  เข่งคุ้ม)"
-  ws[f"F{sig_row+1}"].font = font_normal
-  ws[f"F{sig_row+1}"].alignment = align_center
-
-  ws.merge_cells(f"F{sig_row+2}:I{sig_row+2}")
-  ws[f"F{sig_row+2}"] = "ตำแหน่ง  นักทรัพยากรบุคคลปฏิบัติการ"
-  ws[f"F{sig_row+2}"].font = font_normal
-  ws[f"F{sig_row+2}"].alignment = align_center
 
   output = io.BytesIO()
   wb.save(output)
@@ -345,7 +349,7 @@ def generate_excel_template(df, month, year, emp_type):
 
 
 # -------------------------------------------------------------------------
-# 6. ปุ่มดาวน์โหลดไฟล์
+# 7. ปุ่มดาวน์โหลดไฟล์
 # -------------------------------------------------------------------------
 st.subheader("2. ดาวน์โหลดรายงาน")
 if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร์มราชการ"):
