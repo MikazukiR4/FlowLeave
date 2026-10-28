@@ -13,10 +13,15 @@ st.set_page_config(
     page_title="ระบบสรุปวันลาประจำเดือน", page_icon="📅", layout="wide"
 )
 
-st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ & GridCraft)")
+st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ)")
 
 # -------------------------------------------------------------------------
-# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List อัปเดตล่าสุด)
+# 1. ดึง API Key จาก Environment Variable (Render Secrets) 
+# -------------------------------------------------------------------------
+api_key = os.environ.get("GEMINI_API_KEY", "")
+
+# -------------------------------------------------------------------------
+# 2. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List)
 # -------------------------------------------------------------------------
 DEFAULT_EMPLOYEES = {
     "พนักงานจ้างเหมาเอกชน": [
@@ -53,14 +58,37 @@ DEFAULT_EMPLOYEES = {
     ],
 }
 
-with st.sidebar:
-  st.header("⚙️ ตั้งค่าระบบ")
-  api_key_input = st.text_input("Google Gemini API Key", type="password")
-  api_key = api_key_input or os.environ.get("GEMINI_API_KEY", "")
+# ฟังก์ชันแปลงวันที่เป็นรูปแบบไทย (เช่น 1 ม.ค. 69)
+THAI_MONTH_ABBR = [
+    "",
+    "ม.ค.",
+    "ก.พ.",
+    "มี.ค.",
+    "เม.ย.",
+    "พ.ค.",
+    "มิ.ย.",
+    "ก.ค.",
+    "ส.ค.",
+    "ก.ย.",
+    "ต.ค.",
+    "พ.ย.",
+    "ธ.ค.",
+]
 
-  st.markdown("---")
+
+def format_thai_date(date_obj):
+  if not date_obj:
+    return "-"
+  day = date_obj.day
+  month = THAI_MONTH_ABBR[date_obj.month]
+  year_short = str(date_obj.year + 43)[-2:]
+  return f"{day} {month} {year_short}"
+
+
+with st.sidebar:
+  st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
-      "**คำแนะนำ:**\n1. เลือกประเภทพนักงาน\n2. เพิ่ม/ลดบุคลากร หรือแก้ไขข้อมูลในตารางได้อิสระ\n3. คนที่ไม่ลา ระบบจะเติม '-' ให้อัตโนมัติ\n4. ดาวน์โหลดไฟล์ไปเปิดใน GridCraft ได้เลย"
+      "1. เลือกประเภทพนักงาน\n2. เพิ่ม/ลบ รายชื่อบุคลากรได้ตามต้องการ\n3. บันทึกข้อมูลวันลา (ช่องไหนไม่ลา ระบบใส่ '-' ให้)\n4. กดสร้างและดาวน์โหลดไฟล์ Excel ไปใช้งานได้ทันที"
   )
 
 # เลือกเดือน ปี และประเภทพนักงาน
@@ -93,7 +121,7 @@ with col3:
   )
 
 # -------------------------------------------------------------------------
-# 2. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
+# 3. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
 # -------------------------------------------------------------------------
 if (
     "current_emp_type" not in st.session_state
@@ -123,15 +151,22 @@ st.info(
 )
 
 # -------------------------------------------------------------------------
-# 3. ส่วนเพิ่ม/ลดบุคลากร (UI Controls)
+# 4. ส่วนเพิ่ม / ลบ บุคลากร และบันทึกวันลาด้วย Datepicker
 # -------------------------------------------------------------------------
 st.subheader("1. จัดการรายชื่อบุคลากรและบันทึกวันลา")
 
-with st.expander("➕ เพิ่มบุคลากรใหม่เข้าตาราง"):
+tab_add, tab_del, tab_leave = st.tabs([
+    "➕ เพิ่มบุคลากร",
+    "🗑️ ลบพนักงานออก",
+    "📅 บันทึกวันลา (Datepicker)",
+] )
+
+# Tab 1: เพิ่มบุคลากร
+with tab_add:
   with st.form("add_employee_form", clear_on_submit=True):
     new_name = st.text_input("ชื่อ - สกุล")
     new_pos = st.text_input("ตำแหน่ง")
-    submitted = st.form_submit_button("เพิ่มบุคลากร")
+    submitted = st.form_submit_button("ยืนยันเพิ่มบุคลากร")
     if submitted and new_name:
       new_row = {
           "ที่": len(st.session_state.leave_data) + 1,
@@ -154,18 +189,87 @@ with st.expander("➕ เพิ่มบุคลากรใหม่เข้�
       st.success(f"เพิ่ม {new_name} เรียบร้อยแล้ว!")
       st.rerun()
 
-# ตารางแก้ไขข้อมูล
+# Tab 2: ลบพนักงานออก
+with tab_del:
+  current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
+  if current_names:
+    with st.form("del_employee_form"):
+      target_to_delete = st.selectbox(
+          "เลือกพนักงานที่ต้องการลบออกจากตาราง", current_names
+      )
+      del_submitted = st.form_submit_button("🗑️ ยืนยันลบพนักงานออก")
+      if del_submitted and target_to_delete:
+        st.session_state.leave_data = st.session_state.leave_data[
+            st.session_state.leave_data["ชื่อ - สกุล"] != target_to_delete
+        ].reset_index(drop=True)
+        if not st.session_state.leave_data.empty:
+          st.session_state.leave_data["ที่"] = range(
+              1, len(st.session_state.leave_data) + 1
+          )
+        st.success(f"ลบ {target_to_delete} ออกจากตารางเรียบร้อยแล้ว!")
+        st.rerun()
+  else:
+    st.warning("ไม่มีรายชื่อพนักงานในระบบ")
+
+# Tab 3: บันทึกวันลาด้วย Datepicker
+with tab_leave:
+  current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
+  if current_names:
+    selected_emp = st.selectbox(
+        "เลือกบุคลากร", current_names, key="leave_emp_select"
+    )
+    has_leave = st.checkbox("มีประวัติการลาในรอบเดือนนี้", value=False)
+
+    start_date_val, end_date_val = "-", "-"
+    leave_sick, leave_personal, leave_total, leave_note = "-", "-", "-", "-"
+
+    if has_leave:
+      col_d1, col_d2 = st.columns(2)
+      with col_d1:
+        d1 = st.date_input("ตั้งแต่วันที่", value=datetime.now())
+        start_date_val = format_thai_date(d1)
+      with col_d2:
+        d2 = st.date_input("ถึงวันที่", value=datetime.now())
+        end_date_val = format_thai_date(d2)
+
+      col_n1, col_n2, col_n3, col_n4 = st.columns(4)
+      with col_n1:
+        leave_sick = st.text_input("ลาป่วย (วัน)", value="1")
+      with col_n2:
+        leave_personal = st.text_input("ลากิจ (วัน)", value="-")
+      with col_n3:
+        leave_total = st.text_input("รวม (วัน)", value="1")
+      with col_n4:
+        leave_note = st.text_input("หมายเหตุ", value="-")
+
+    if st.button("💾 บันทึกวันลาลงตาราง"):
+      df = st.session_state.leave_data
+      idx = df[df["ชื่อ - สกุล"] == selected_emp].index
+      if not idx.empty:
+        i = idx[0]
+        df.loc[i, "ตั้งแต่วันที่"] = start_date_val
+        df.loc[i, "ถึงวันที่"] = end_date_val
+        df.loc[i, "ลาป่วย"] = leave_sick
+        df.loc[i, "ลากิจ"] = leave_personal
+        df.loc[i, "รวม (วัน)"] = leave_total
+        df.loc[i, "หมายเหตุ"] = leave_note
+        st.success(f"อัปเดตวันลาของ {selected_emp} สำเร็จ!")
+        st.rerun()
+  else:
+    st.info("กรุณาเพิ่มบุคลากรก่อนบันทึกวันลา")
+
+# ตารางแสดงผลภาพรวมและแก้ไขสด
+st.markdown("### 📋 ตารางสรุปข้อมูลปัจจุบัน")
 edited_df = st.data_editor(
     st.session_state.leave_data,
     num_rows="dynamic",
     use_container_width=True,
     key="employee_table_editor",
 )
-
 st.session_state.leave_data = edited_df
 
 # -------------------------------------------------------------------------
-# 4. ฟังก์ชันสร้าง Excel ใช้ฟอนต์ TH Sarabun PSK ตาม Template ราชการ
+# 5. ฟังก์ชันสร้าง Excel ใช้ฟอนต์ TH Sarabun PSK ตาม Template ราชการ
 # -------------------------------------------------------------------------
 
 
@@ -174,7 +278,6 @@ def generate_excel_template(df, month, year, emp_type):
   ws = wb.active
   ws.title = "สรุปวันลา"
 
-  # เรียกใช้ฟอนต์ TH Sarabun PSK
   font_header = Font(name="TH Sarabun PSK", size=16, bold=True)
   font_bold = Font(name="TH Sarabun PSK", size=14, bold=True)
   font_normal = Font(name="TH Sarabun PSK", size=14)
@@ -295,9 +398,9 @@ def generate_excel_template(df, month, year, emp_type):
 
 
 # -------------------------------------------------------------------------
-# 5. ปุ่มดาวน์โหลดไฟล์
+# 6. ปุ่มดาวน์โหลดไฟล์
 # -------------------------------------------------------------------------
-st.subheader("2. ดาวน์โหลดรายงานเพื่อเปิดใน GridCraft")
+st.subheader("2. ดาวน์โหลดรายงาน")
 if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร์มราชการ"):
   excel_file = generate_excel_template(
       edited_df, selected_month, selected_year, employee_type
@@ -312,4 +415,4 @@ if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร
       ),
       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   )
-  st.success("สร้างไฟล์สำเร็จ! สามารถนำไปเปิดดูผ่าน GridCraft ได้เลยครับ")
+  st.success("สร้างไฟล์สำเร็จ! พร้อมนำไปใช้งานต่อได้ทันทีครับ")
