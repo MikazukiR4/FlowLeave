@@ -13,10 +13,10 @@ st.set_page_config(
     page_title="ระบบสรุปวันลาประจำเดือน", page_icon="📅", layout="wide"
 )
 
-st.title("📌 ระบบสรุปวันลาประจำเดือน (จัดการบุคลากรได้ & Template ราชการ)")
+st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ & GridCraft)")
 
 # -------------------------------------------------------------------------
-# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List)
+# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List อัปเดตล่าสุด)
 # -------------------------------------------------------------------------
 DEFAULT_EMPLOYEES = {
     "พนักงานจ้างเหมาเอกชน": [
@@ -60,7 +60,7 @@ with st.sidebar:
 
   st.markdown("---")
   st.markdown(
-      "**คำแนะนำ:**\n1. เลือกประเภทพนักงาน\n2. สามารถเพิ่ม/ลดบุคลากร หรือแก้ข้อมูลในตารางได้โดยตรง\n3. คนที่ไม่ลา ระบบจะเติมเครื่องหมาย '-' ให้อัตโนมัติ\n4. กดสร้างและดาวน์โหลดไฟล์ไปเปิดใน GridCraft ได้เลย"
+      "**คำแนะนำ:**\n1. เลือกประเภทพนักงาน\n2. เพิ่ม/ลดบุคลากร หรือแก้ไขข้อมูลในตารางได้อิสระ\n3. คนที่ไม่ลา ระบบจะเติม '-' ให้อัตโนมัติ\n4. ดาวน์โหลดไฟล์ไปเปิดใน GridCraft ได้เลย"
   )
 
 # เลือกเดือน ปี และประเภทพนักงาน
@@ -128,7 +128,7 @@ st.info(
 st.subheader("1. จัดการรายชื่อบุคลากรและบันทึกวันลา")
 
 with st.expander("➕ เพิ่มบุคลากรใหม่เข้าตาราง"):
-  with st.form("add_employee_form"):
+  with st.form("add_employee_form", clear_on_submit=True):
     new_name = st.text_input("ชื่อ - สกุล")
     new_pos = st.text_input("ตำแหน่ง")
     submitted = st.form_submit_button("เพิ่มบุคลากร")
@@ -148,14 +148,13 @@ with st.expander("➕ เพิ่มบุคลากรใหม่เข้�
           [st.session_state.leave_data, pd.DataFrame([new_row])],
           ignore_index=True,
       )
-      # จัดเรียงลำดับเลข "ที่" ใหม่
       st.session_state.leave_data["ที่"] = range(
           1, len(st.session_state.leave_data) + 1
       )
       st.success(f"เพิ่ม {new_name} เรียบร้อยแล้ว!")
       st.rerun()
 
-# ตารางแก้ไขข้อมูล (สามารถพิมพ์แก้ หรือกดลบแถวได้)
+# ตารางแก้ไขข้อมูล
 edited_df = st.data_editor(
     st.session_state.leave_data,
     num_rows="dynamic",
@@ -163,11 +162,10 @@ edited_df = st.data_editor(
     key="employee_table_editor",
 )
 
-# อัปเดตข้อมูลใน session เมื่อมีการเปลี่ยนแปลง
 st.session_state.leave_data = edited_df
 
 # -------------------------------------------------------------------------
-# 4. ฟังก์ชันสร้าง Excel ตาม Template ราชการ (รองรับ GridCraft)
+# 4. ฟังก์ชันสร้าง Excel ใช้ฟอนต์ TH Sarabun PSK ตาม Template ราชการ
 # -------------------------------------------------------------------------
 
 
@@ -176,6 +174,7 @@ def generate_excel_template(df, month, year, emp_type):
   ws = wb.active
   ws.title = "สรุปวันลา"
 
+  # เรียกใช้ฟอนต์ TH Sarabun PSK
   font_header = Font(name="TH Sarabun PSK", size=16, bold=True)
   font_bold = Font(name="TH Sarabun PSK", size=14, bold=True)
   font_normal = Font(name="TH Sarabun PSK", size=14)
@@ -252,7 +251,7 @@ def generate_excel_template(df, month, year, emp_type):
   last_row = start_row
   for i, row in df.iterrows():
     r = start_row + i
-    ws[f"A{r}"] = i + 1  # จัดลำดับที่ใหม่เสมอ
+    ws[f"A{r}"] = i + 1
     ws[f"B{r}"] = row.get("ชื่อ - สกุล", "")
     ws[f"C{r}"] = row.get("ตำแหน่ง", "")
     ws[f"D{r}"] = row.get("ตั้งแต่วันที่", "-")
@@ -298,7 +297,7 @@ def generate_excel_template(df, month, year, emp_type):
 # -------------------------------------------------------------------------
 # 5. ปุ่มดาวน์โหลดไฟล์
 # -------------------------------------------------------------------------
-st.subheader("2. ดาวน์โหลดรายงานเพื่อเปิดใน GridCraft หรือ Excel")
+st.subheader("2. ดาวน์โหลดรายงานเพื่อเปิดใน GridCraft")
 if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร์มราชการ"):
   excel_file = generate_excel_template(
       edited_df, selected_month, selected_year, employee_type
@@ -313,6 +312,4 @@ if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร
       ),
       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   )
-  st.success(
-      "สร้างไฟล์สำเร็จ! สามารถนำไฟล์ไปเปิดดูผ่าน GridCraft ได้เลยครับ"
-  )
+  st.success("สร้างไฟล์สำเร็จ! สามารถนำไปเปิดดูผ่าน GridCraft ได้เลยครับ")
