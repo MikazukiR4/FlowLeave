@@ -1,8 +1,6 @@
 from datetime import datetime
 import io
 import os
-from google import genai
-from google.genai import types
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, Side
 import pandas as pd
@@ -16,12 +14,7 @@ st.set_page_config(
 st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ)")
 
 # -------------------------------------------------------------------------
-# 1. ดึง API Key จาก Environment Variable (Render Secrets) 
-# -------------------------------------------------------------------------
-api_key = os.environ.get("GEMINI_API_KEY", "")
-
-# -------------------------------------------------------------------------
-# 2. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List)
+# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List)
 # -------------------------------------------------------------------------
 DEFAULT_EMPLOYEES = {
     "พนักงานจ้างเหมาเอกชน": [
@@ -88,7 +81,7 @@ def format_thai_date(date_obj):
 with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
-      "1. เลือกประเภทพนักงาน\n2. เพิ่ม/ลบ รายชื่อบุคลากรได้ตามต้องการ\n3. บันทึกข้อมูลวันลา (ช่องไหนไม่ลา ระบบใส่ '-' ให้)\n4. กดสร้างและดาวน์โหลดไฟล์ Excel ไปใช้งานได้ทันที"
+      "1. เลือกประเภทพนักงาน\n2. เพิ่มหรือลบรายชื่อบุคลากรได้ที่เมนูด้านล่าง\n3. แก้ไขวันลาในตาราง (ช่องไหนไม่ลาให้ใส่ '-')\n4. กดสร้างและดาวน์โหลดไฟล์ Excel"
   )
 
 # เลือกเดือน ปี และประเภทพนักงาน
@@ -121,7 +114,7 @@ with col3:
   )
 
 # -------------------------------------------------------------------------
-# 3. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
+# 2. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
 # -------------------------------------------------------------------------
 if (
     "current_emp_type" not in st.session_state
@@ -151,115 +144,13 @@ st.info(
 )
 
 # -------------------------------------------------------------------------
-# 4. ส่วนเพิ่ม / ลบ บุคลากร และบันทึกวันลาด้วย Datepicker
+# 3. ตารางหลักสำหรับแก้ไขข้อมูล (Data Editor)
 # -------------------------------------------------------------------------
-st.subheader("1. จัดการรายชื่อบุคลากรและบันทึกวันลา")
+st.subheader("1. ตารางสรุปข้อมูลบุคลากรและวันลา")
+st.markdown(
+    "💡 *เคล็ดลับ: สามารถคลิกแก้ข้อมูลในตารางได้โดยตรง หรือเพิ่ม/ลบรายชื่อด้านล่างได้*"
+)
 
-tab_add, tab_del, tab_leave = st.tabs([
-    "➕ เพิ่มบุคลากร",
-    "🗑️ ลบพนักงานออก",
-    "📅 บันทึกวันลา (Datepicker)",
-] )
-
-# Tab 1: เพิ่มบุคลากร
-with tab_add:
-  with st.form("add_employee_form", clear_on_submit=True):
-    new_name = st.text_input("ชื่อ - สกุล")
-    new_pos = st.text_input("ตำแหน่ง")
-    submitted = st.form_submit_button("ยืนยันเพิ่มบุคลากร")
-    if submitted and new_name:
-      new_row = {
-          "ที่": len(st.session_state.leave_data) + 1,
-          "ชื่อ - สกุล": new_name,
-          "ตำแหน่ง": new_pos or "-",
-          "ตั้งแต่วันที่": "-",
-          "ถึงวันที่": "-",
-          "ลาป่วย": "-",
-          "ลากิจ": "-",
-          "รวม (วัน)": "-",
-          "หมายเหตุ": "-",
-      }
-      st.session_state.leave_data = pd.concat(
-          [st.session_state.leave_data, pd.DataFrame([new_row])],
-          ignore_index=True,
-      )
-      st.session_state.leave_data["ที่"] = range(
-          1, len(st.session_state.leave_data) + 1
-      )
-      st.success(f"เพิ่ม {new_name} เรียบร้อยแล้ว!")
-      st.rerun()
-
-# Tab 2: ลบพนักงานออก
-with tab_del:
-  current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
-  if current_names:
-    with st.form("del_employee_form"):
-      target_to_delete = st.selectbox(
-          "เลือกพนักงานที่ต้องการลบออกจากตาราง", current_names
-      )
-      del_submitted = st.form_submit_button("🗑️ ยืนยันลบพนักงานออก")
-      if del_submitted and target_to_delete:
-        st.session_state.leave_data = st.session_state.leave_data[
-            st.session_state.leave_data["ชื่อ - สกุล"] != target_to_delete
-        ].reset_index(drop=True)
-        if not st.session_state.leave_data.empty:
-          st.session_state.leave_data["ที่"] = range(
-              1, len(st.session_state.leave_data) + 1
-          )
-        st.success(f"ลบ {target_to_delete} ออกจากตารางเรียบร้อยแล้ว!")
-        st.rerun()
-  else:
-    st.warning("ไม่มีรายชื่อพนักงานในระบบ")
-
-# Tab 3: บันทึกวันลาด้วย Datepicker
-with tab_leave:
-  current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
-  if current_names:
-    selected_emp = st.selectbox(
-        "เลือกบุคลากร", current_names, key="leave_emp_select"
-    )
-    has_leave = st.checkbox("มีประวัติการลาในรอบเดือนนี้", value=False)
-
-    start_date_val, end_date_val = "-", "-"
-    leave_sick, leave_personal, leave_total, leave_note = "-", "-", "-", "-"
-
-    if has_leave:
-      col_d1, col_d2 = st.columns(2)
-      with col_d1:
-        d1 = st.date_input("ตั้งแต่วันที่", value=datetime.now())
-        start_date_val = format_thai_date(d1)
-      with col_d2:
-        d2 = st.date_input("ถึงวันที่", value=datetime.now())
-        end_date_val = format_thai_date(d2)
-
-      col_n1, col_n2, col_n3, col_n4 = st.columns(4)
-      with col_n1:
-        leave_sick = st.text_input("ลาป่วย (วัน)", value="1")
-      with col_n2:
-        leave_personal = st.text_input("ลากิจ (วัน)", value="-")
-      with col_n3:
-        leave_total = st.text_input("รวม (วัน)", value="1")
-      with col_n4:
-        leave_note = st.text_input("หมายเหตุ", value="-")
-
-    if st.button("💾 บันทึกวันลาลงตาราง"):
-      df = st.session_state.leave_data
-      idx = df[df["ชื่อ - สกุล"] == selected_emp].index
-      if not idx.empty:
-        i = idx[0]
-        df.loc[i, "ตั้งแต่วันที่"] = start_date_val
-        df.loc[i, "ถึงวันที่"] = end_date_val
-        df.loc[i, "ลาป่วย"] = leave_sick
-        df.loc[i, "ลากิจ"] = leave_personal
-        df.loc[i, "รวม (วัน)"] = leave_total
-        df.loc[i, "หมายเหตุ"] = leave_note
-        st.success(f"อัปเดตวันลาของ {selected_emp} สำเร็จ!")
-        st.rerun()
-  else:
-    st.info("กรุณาเพิ่มบุคลากรก่อนบันทึกวันลา")
-
-# ตารางแสดงผลภาพรวมและแก้ไขสด
-st.markdown("### 📋 ตารางสรุปข้อมูลปัจจุบัน")
 edited_df = st.data_editor(
     st.session_state.leave_data,
     num_rows="dynamic",
@@ -267,6 +158,62 @@ edited_df = st.data_editor(
     key="employee_table_editor",
 )
 st.session_state.leave_data = edited_df
+
+# -------------------------------------------------------------------------
+# 4. ส่วนเพิ่ม / ลบ บุคลากร
+# -------------------------------------------------------------------------
+with st.expander("➕ จัดการรายชื่อบุคลากร (เพิ่ม / ลบ พนักงาน)"):
+  col_add, col_del = st.columns(2)
+
+  with col_add:
+    st.markdown("#### เพิ่มบุคลากรใหม่")
+    with st.form("add_emp_form", clear_on_submit=True):
+      new_name = st.text_input("ชื่อ - สกุล")
+      new_pos = st.text_input("ตำแหน่ง")
+      submitted_add = st.form_submit_button("เพิ่มพนักงาน")
+      if submitted_add and new_name:
+        new_row = {
+            "ที่": len(st.session_state.leave_data) + 1,
+            "ชื่อ - สกุล": new_name,
+            "ตำแหน่ง": new_pos or "-",
+            "ตั้งแต่วันที่": "-",
+            "ถึงวันที่": "-",
+            "ลาป่วย": "-",
+            "ลากิจ": "-",
+            "รวม (วัน)": "-",
+            "หมายเหตุ": "-",
+        }
+        st.session_state.leave_data = pd.concat(
+            [st.session_state.leave_data, pd.DataFrame([new_row])],
+            ignore_index=True,
+        )
+        st.session_state.leave_data["ที่"] = range(
+            1, len(st.session_state.leave_data) + 1
+        )
+        st.success(f"เพิ่ม {new_name} เรียบร้อย!")
+        st.rerun()
+
+  with col_del:
+    st.markdown("#### ลบพนักงานออก")
+    current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
+    if current_names:
+      with st.form("del_emp_form"):
+        target_to_delete = st.selectbox(
+            "เลือกพนักงานที่ต้องการลบ", current_names
+        )
+        submitted_del = st.form_submit_button("🗑️ ลบพนักงานออก")
+        if submitted_del and target_to_delete:
+          st.session_state.leave_data = st.session_state.leave_data[
+              st.session_state.leave_data["ชื่อ - สกุล"] != target_to_delete
+          ].reset_index(drop=True)
+          if not st.session_state.leave_data.empty:
+            st.session_state.leave_data["ที่"] = range(
+                1, len(st.session_state.leave_data) + 1
+            )
+          st.success(f"ลบ {target_to_delete} ออกแล้ว!")
+          st.rerun()
+    else:
+      st.info("ไม่มีรายชื่อพนักงาน")
 
 # -------------------------------------------------------------------------
 # 5. ฟังก์ชันสร้าง Excel ใช้ฟอนต์ TH Sarabun PSK ตาม Template ราชการ
