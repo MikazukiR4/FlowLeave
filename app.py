@@ -1,5 +1,6 @@
 from datetime import datetime
 import io
+import os
 from google import genai
 from google.genai import types
 import openpyxl
@@ -12,28 +13,57 @@ st.set_page_config(
     page_title="ระบบสรุปวันลาประจำเดือน", page_icon="📅", layout="wide"
 )
 
-st.title("📌 ระบบสรุปวันลาประจำเดือน (อัตโนมัติ & AI OCR)")
+st.title("📌 ระบบสรุปวันลาประจำเดือน (จัดการบุคลากรได้ & Template ราชการ)")
 
 # -------------------------------------------------------------------------
-# 1. ส่วนตั้งค่า API Key สำหรับ Google Gemini
+# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List)
 # -------------------------------------------------------------------------
+DEFAULT_EMPLOYEES = {
+    "พนักงานจ้างเหมาเอกชน": [
+        {
+            "name": "นางสาวณัฐพร  มิตรพิทักษ์",
+            "position": "พนักงานจ้างปฏิบัติงานนโยบายและแผน",
+        },
+        {
+            "name": "นางสาวณัฐธิชา  แถวทัด",
+            "position": "พนักงานจ้างปฏิบัติงานนิเทศติดตามและประเมินผล",
+        },
+        {"name": "นางสาววิชุดา  ศรีคร้ามครัน", "position": "พนักงานจ้างปฏิบัติงานธุรการ"},
+        {"name": "นางสาวยัสมี  ดาโอะ", "position": "พนักงานจ้างปฏิบัติงานธุรการ"},
+        {"name": "นางสาวภาวินีย์  ตันสกุล", "position": "พนักงานจ้างทำความสะอาด"},
+        {"name": "นายภานุวัฒน์  จันทร์ชีวา", "position": "พนักงานจ้างปฏิบัติงานขับรถยนต์"},
+        {
+            "name": "นางสาวหัทยาภักดิ์ แสงแก้ว",
+            "position": "พนักงานจ้างปฏิบัติงานการเงินและบัญชี",
+        },
+        {
+            "name": "นายหนึ่ง  สุนทรรัตน์",
+            "position": "พนักงานจ้างปฏิบัติงานรักษาความปลอดภัย",
+        },
+    ],
+    "พนักงานราชการ": [
+        {
+            "name": "นางสาวอมรารัตน์  พูลสวัสดิ์",
+            "position": "พนักงานจัดการงานบุคคล",
+        },
+        {
+            "name": "นายสมชาย  สุพรดวงชัย",
+            "position": "พนักงานจัดการงานทั่วไป",
+        },
+    ],
+}
+
 with st.sidebar:
   st.header("⚙️ ตั้งค่าระบบ")
-  api_key_input = st.text_input(
-      "Google Gemini API Key",
-      type="password",
-      help="ใส่ API Key ของคุณที่นี่ หรือตั้งค่าใน Environment Variable",
-  )
+  api_key_input = st.text_input("Google Gemini API Key", type="password")
   api_key = api_key_input or os.environ.get("GEMINI_API_KEY", "")
 
   st.markdown("---")
   st.markdown(
-      "**คำแนะนำการใช้งาน:**\n1. ตรวจสอบเดือนและปีปัจจุบัน\n2. อัปโหลดรูปภาพหรือสแกนใบลาที่มีตารางพนักงาน\n3. ตรวจสอบและแก้ไขข้อมูลในตาราง\n4. กดดาวน์โหลดไฟล์ Excel ตามแบบฟอร์มราชการ"
+      "**คำแนะนำ:**\n1. เลือกประเภทพนักงาน\n2. สามารถเพิ่ม/ลดบุคลากร หรือแก้ข้อมูลในตารางได้โดยตรง\n3. คนที่ไม่ลา ระบบจะเติมเครื่องหมาย '-' ให้อัตโนมัติ\n4. กดสร้างและดาวน์โหลดไฟล์ไปเปิดใน GridCraft ได้เลย"
   )
 
-# -------------------------------------------------------------------------
-# 2. ส่วนเลือกเดือนและปี (Default เป็นปัจจุบัน)
-# -------------------------------------------------------------------------
+# เลือกเดือน ปี และประเภทพนักงาน
 thai_months = [
     "มกราคม",
     "กุมภาพันธ์",
@@ -48,23 +78,44 @@ thai_months = [
     "พฤศจิกายน",
     "ธันวาคม",
 ]
-
 now = datetime.now()
-default_month_idx = now.month - 1
-default_year = now.year + 543  # แปลงเป็นพ.ศ.
 
 col1, col2, col3 = st.columns([2, 2, 3])
 with col1:
   selected_month = st.selectbox(
-      "ประจำเดือน", thai_months, index=default_month_idx
+      "ประจำเดือน", thai_months, index=now.month - 1
   )
 with col2:
-  selected_year = st.number_input("ปี พ.ศ.", value=default_year)
+  selected_year = st.number_input("ปี พ.ศ.", value=now.year + 543)
 with col3:
   employee_type = st.selectbox(
-      "ประเภทพนักงาน",
-      ["พนักงานจ้างเหมาเอกชน", "ลูกจ้างประจำ", "พนักงานราชการ"],
+      "ประเภทพนักงาน", list(DEFAULT_EMPLOYEES.keys())
   )
+
+# -------------------------------------------------------------------------
+# 2. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
+# -------------------------------------------------------------------------
+if (
+    "current_emp_type" not in st.session_state
+    or st.session_state.current_emp_type != employee_type
+):
+  st.session_state.current_emp_type = employee_type
+  emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
+
+  initial_rows = []
+  for idx, emp in enumerate(emp_list, 1):
+    initial_rows.append({
+        "ที่": idx,
+        "ชื่อ - สกุล": emp["name"],
+        "ตำแหน่ง": emp["position"],
+        "ตั้งแต่วันที่": "-",
+        "ถึงวันที่": "-",
+        "ลาป่วย": "-",
+        "ลากิจ": "-",
+        "รวม (วัน)": "-",
+        "หมายเหตุ": "-",
+    })
+  st.session_state.leave_data = pd.DataFrame(initial_rows)
 
 st.info(
     f"📂 กำลังจัดการข้อมูลของ: **{employee_type}** ประจำเดือน**{selected_month}"
@@ -72,81 +123,51 @@ st.info(
 )
 
 # -------------------------------------------------------------------------
-# 3. ข้อมูลตัวอย่างเริ่มต้น (Mock Data) และส่วนอัปโหลดไฟล์
+# 3. ส่วนเพิ่ม/ลดบุคลากร (UI Controls)
 # -------------------------------------------------------------------------
-if "leave_data" not in st.session_state:
-  st.session_state.leave_data = pd.DataFrame([
-      {
-          "ที่": 1,
-          "ชื่อ - สกุล": "นางสาวณัฐพร  มิตรพิทักษ์",
-          "ตำแหน่ง": "พนักงานจ้างปฏิบัติงานนโยบายและแผน",
-          "ตั้งแต่วันที่": "5 Oct 26",
-          "ถึงวันที่": "5 Oct 26",
-          "ลาป่วย": 0.5,
-          "ลากิจ": "-",
-          "รวม (วัน)": 1.5,
-          "หมายเหตุ": "ครึ่งวันเช้า",
-      },
-      {
-          "ที่": 2,
-          "ชื่อ - สกุล": "นางสาวณัฐธิชา  แถวทัด",
-          "ตำแหน่ง": "พนักงานจ้างปฏิบัติงานนิเทศติดตามและประเมินผล",
+st.subheader("1. จัดการรายชื่อบุคลากรและบันทึกวันลา")
+
+with st.expander("➕ เพิ่มบุคลากรใหม่เข้าตาราง"):
+  with st.form("add_employee_form"):
+    new_name = st.text_input("ชื่อ - สกุล")
+    new_pos = st.text_input("ตำแหน่ง")
+    submitted = st.form_submit_button("เพิ่มบุคลากร")
+    if submitted and new_name:
+      new_row = {
+          "ที่": len(st.session_state.leave_data) + 1,
+          "ชื่อ - สกุล": new_name,
+          "ตำแหน่ง": new_pos or "-",
           "ตั้งแต่วันที่": "-",
           "ถึงวันที่": "-",
           "ลาป่วย": "-",
           "ลากิจ": "-",
           "รวม (วัน)": "-",
           "หมายเหตุ": "-",
-      },
-  ])
+      }
+      st.session_state.leave_data = pd.concat(
+          [st.session_state.leave_data, pd.DataFrame([new_row])],
+          ignore_index=True,
+      )
+      # จัดเรียงลำดับเลข "ที่" ใหม่
+      st.session_state.leave_data["ที่"] = range(
+          1, len(st.session_state.leave_data) + 1
+      )
+      st.success(f"เพิ่ม {new_name} เรียบร้อยแล้ว!")
+      st.rerun()
 
-st.subheader("1. อัปโหลดเอกสารใบลา (สแกน/รูปภาพ/PDF)")
-uploaded_file = st.file_uploader(
-    "เลือกไฟล์เอกสารบัญชีลงเวลา/ใบลา", type=["png", "jpg", "jpeg", "pdf"]
-)
-
-if uploaded_file is not None:
-  st.image(
-      uploaded_file,
-      caption="ไฟล์เอกสารที่อัปโหลด",
-      use_container_width=True,
-  )
-  if st.button("✨ ให้ AI (Gemini) ช่วยอ่านข้อมูลจากเอกสาร"):
-    if not api_key:
-      st.error("กรุณากรอก Google Gemini API Key ที่แถบด้านข้างก่อนครับ")
-    else:
-      try:
-        with st.spinner("AI กำลังอ่านข้อมูลจากตาราง... รอสักครู่"):
-          client = genai.Client(api_key=api_key)
-          file_bytes = uploaded_file.getvalue()
-          mime_type = uploaded_file.type
-
-          prompt = (
-              "คุณคือเจ้าหน้าที่บุคคล จงอ่านข้อมูลตารางใบลาจากรูปนี้ แล้วสกัดเป็น"
-              " JSON รายชื่อพนักงาน ฟิลด์:ที่, ชื่อ-สกุล, ตำแหน่ง, ตั้งแต่วันที่,"
-              " ถึงวันที่, ลาป่วย, ลากิจ, รวม(วัน), หมายเหตุ"
-          )
-          response = client.models.generate_content(
-              model="gemini-2.5-flash",
-              contents=[
-                  types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                  prompt,
-              ],
-          )
-          st.success("อ่านข้อมูลสำเร็จ!")
-      except Exception as e:
-        st.error(f"เกิดข้อผิดพลาด: {e}")
-
-# -------------------------------------------------------------------------
-# 4. ตารางตรวจสอบและแก้ไขข้อมูลก่อนออกรายงาน
-# -------------------------------------------------------------------------
-st.subheader("2. ตรวจสอบและแก้ไขข้อมูลก่อนสร้างรายงาน")
+# ตารางแก้ไขข้อมูล (สามารถพิมพ์แก้ หรือกดลบแถวได้)
 edited_df = st.data_editor(
-    st.session_state.leave_data, num_rows="dynamic", use_container_width=True
+    st.session_state.leave_data,
+    num_rows="dynamic",
+    use_container_width=True,
+    key="employee_table_editor",
 )
 
+# อัปเดตข้อมูลใน session เมื่อมีการเปลี่ยนแปลง
+st.session_state.leave_data = edited_df
+
 # -------------------------------------------------------------------------
-# 5. ฟังก์ชันสร้าง Excel ตาม Template ราชการ (เปิดตาราง 2 ชั้น + ลงชื่อ)
+# 4. ฟังก์ชันสร้าง Excel ตาม Template ราชการ (รองรับ GridCraft)
 # -------------------------------------------------------------------------
 
 
@@ -170,8 +191,24 @@ def generate_excel_template(df, month, year, emp_type):
   )
   align_left = Alignment(horizontal="left", vertical="center")
 
+  col_widths = {
+      "A": 6,
+      "B": 25,
+      "C": 35,
+      "D": 15,
+      "E": 15,
+      "F": 10,
+      "G": 10,
+      "H": 10,
+      "I": 18,
+  }
+  for col, width in col_widths.items():
+    ws.column_dimensions[col].width = width
+
   # หัวข้อรายงาน
-  ws["A1"] = f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม"
+  ws["A1"] = (
+      f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม"
+  )
   ws["A1"].font = font_header
   ws.merge_cells("A1:I1")
   ws["A1"].alignment = align_center
@@ -181,7 +218,7 @@ def generate_excel_template(df, month, year, emp_type):
   ws.merge_cells("A2:I2")
   ws["A2"].alignment = align_center
 
-  # หัวตาราง 2 ชั้น (Rows 4-5)
+  # หัวตาราง 2 ชั้น
   ws.merge_cells("A4:A5")
   ws["A4"] = "ที่"
   ws.merge_cells("B4:B5")
@@ -199,22 +236,23 @@ def generate_excel_template(df, month, year, emp_type):
   ws["G5"] = "ลากิจ"
 
   ws.merge_cells("H4:H5")
-  ws["H4"] = "รวม (วัน)"
+  ws["H4"] = "รวม\n(วัน)"
   ws.merge_cells("I4:I5")
   ws["I4"] = "หมายเหตุ"
 
-  for row in ws["A4:I5"]:
-    for cell in row:
+  for r in [4, 5]:
+    for col_idx in range(1, 10):
+      cell = ws.cell(row=r, column=col_idx)
       cell.font = font_bold
       cell.alignment = align_center
       cell.border = thin_border
 
-  # วนลูปข้อมูลพนักงาน
+  # ข้อมูลพนักงาน
   start_row = 6
   last_row = start_row
   for i, row in df.iterrows():
     r = start_row + i
-    ws[f"A{r}"] = row.get("ที่", i + 1)
+    ws[f"A{r}"] = i + 1  # จัดลำดับที่ใหม่เสมอ
     ws[f"B{r}"] = row.get("ชื่อ - สกุล", "")
     ws[f"C{r}"] = row.get("ตำแหน่ง", "")
     ws[f"D{r}"] = row.get("ตั้งแต่วันที่", "-")
@@ -258,20 +296,23 @@ def generate_excel_template(df, month, year, emp_type):
 
 
 # -------------------------------------------------------------------------
-# 6. ปุ่มดาวน์โหลดรายงาน
+# 5. ปุ่มดาวน์โหลดไฟล์
 # -------------------------------------------------------------------------
-st.subheader("3. ดาวน์โหลดรายงานสรุปประจำเดือน")
-if st.button("📥 สร้างและดาวน์โหลดไฟล์ Excel ตามแบบฟอร์ม"):
+st.subheader("2. ดาวน์โหลดรายงานเพื่อเปิดใน GridCraft หรือ Excel")
+if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร์มราชการ"):
   excel_file = generate_excel_template(
       edited_df, selected_month, selected_year, employee_type
   )
 
+  data_as_bytes = excel_file.getvalue()
   st.download_button(
-      label="💾 คลิกลงเพื่อดาวน์โหลดไฟล์ .xlsx",
-      data=excel_file,
+      label="💾 บันทึกไฟล์ .xlsx",
+      data=data_as_bytes,
       file_name=(
           f"สรุปวันลา_{employee_type}_{selected_month}_{selected_year}.xlsx"
       ),
       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   )
-  st.success("สร้างไฟล์ Excel เรียบร้อยแล้วครับ!")
+  st.success(
+      "สร้างไฟล์สำเร็จ! สามารถนำไฟล์ไปเปิดดูผ่าน GridCraft ได้เลยครับ"
+  )
