@@ -94,15 +94,15 @@ def format_thai_date(date_obj):
 
 
 # -------------------------------------------------------------------------
-# ส่วนหัว: เลือกเดือน ปี และประเภทพนักงาน (ควบคุมขอบเขตระบบทั้งหมด)
+# ส่วนหัว: เลือกเดือน ปี และประเภทพนักงาน
 # -------------------------------------------------------------------------
 with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
-      "1. **กำหนดงวดเวลา:** เลือกเดือนและปีที่ต้องการสรุปรายงานด้านบน\n2."
-      " **บันทึกวันลา:** ระบบจะล็อกวันที่ให้อยู่ในเดือนนั้นๆอัตโนมัติ\n3."
-      " **ตรวจสอบ:** ตรวจสอบความถูกต้องในตารางสรุป\n4. **ดาวน์โหลด:**"
-      " กดสร้างไฟล์ Excel เพื่อนำไปใช้งาน"
+      "1. **เลือกงวดเวลา:** กำหนดเดือนและปีที่ต้องการสรุปรายงานด้านบน\n2."
+      " **บันทึกวันลา:** **คลิกเลือกแถวชื่อพนักงาน** ในตาราง ระบบจะเด้งหน้าต่าง"
+      " Datepicker ขึ้นมาให้ทันที\n3. **ดาวน์โหลด:** ตรวจสอบข้อมูลแล้วกดสร้างไฟล์"
+      " Excel ได้เลย"
   )
 
 thai_months = THAI_MONTH_FULL[1:]
@@ -121,7 +121,6 @@ with header_col3:
       "ประเภทพนักงาน", list(DEFAULT_EMPLOYEES.keys())
   )
 
-# คำนวณขอบเขตวันเริ่มต้นและวันสิ้นสุดของเดือนที่เลือก (ป้องปรามการบันทึกข้ามเดือน)
 selected_month_num = thai_months.index(selected_month) + 1
 selected_ce_year = selected_year - 543
 last_day_of_month = calendar.monthrange(selected_ce_year, selected_month_num)[
@@ -161,93 +160,96 @@ st.info(
     f"📂 กำลังจัดการข้อมูลของ: **{employee_type}** ประจำเดือน**{selected_month}"
     f" {selected_year}**"
 )
+st.markdown(
+    "💡 *เคล็ดลับ: **คลิกเลือกแถวพนักงานในตารางด้านล่าง** เพื่อเปิดหน้าต่างบันทึกวันลาแบบป๊อปอัปได้ทันที!*"
+)
+
 
 # -------------------------------------------------------------------------
-# ส่วนบันทึกวันลา (ปรับ UX ให้กระชับ ไม่ซ้ำซ้อน จัดวางในกรอบเดียวจบ)
+# Modal Dialog สำหรับเลือกวันลา (เด้งขึ้นมาเมื่อคลิกแถวในตาราง)
 # -------------------------------------------------------------------------
-st.subheader("✍️ บันทึก / อัปเดตข้อมูลการลา")
-with st.container(border=True):
-  current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
-  if current_names:
-    form_col1, form_col2 = st.columns(2)
+@st.dialog("📅 บันทึก / อัปเดตวันลาบุคลากร", width="large")
+def open_leave_dialog(emp_name):
+  st.markdown(f"### 👤 บุคลากร: **{emp_name}**")
 
-    with form_col1:
-      target_emp = st.selectbox("เลือกบุคลากร", current_names)
-      leave_category = st.selectbox("ประเภทการลา", ["ลาป่วย", "ลากิจ"])
-      d_start = st.date_input(
-          "ตั้งแต่วันที่",
-          value=month_start_date,
-          min_value=month_start_date,
-          max_value=month_end_date,
-      )
+  leave_category = st.selectbox("ประเภทการลา", ["ลาป่วย", "ลากิจ"], key="d_cat")
 
-    with form_col2:
-      d_end = st.date_input(
-          "ถึงวันที่",
-          value=month_start_date,
-          min_value=month_start_date,
-          max_value=month_end_date,
-      )
-      note_choice = st.selectbox(
-          "หมายเหตุ / ลักษณะการลา",
-          [
-              "- (ปกติ / เต็มวัน)",
-              "ลาครึ่งวันเช้า",
-              "ลาครึ่งวันบ่าย",
-              "✏️ พิมพ์ระบุหมายเหตุเอง...",
-          ],
-      )
-      final_note = "-"
-      if note_choice == "✏️ พิมพ์ระบุเอง...":
-        final_note = st.text_input("ระบุข้อความหมายเหตุเพิ่มเติม", value="")
-      elif note_choice != "- (ปกติ / เต็มวัน)":
-        final_note = note_choice
-
-    # ตรวจสอบความถูกต้องของช่วงวันที่
-    is_date_invalid = d_end < d_start
-    if is_date_invalid:
-      st.error(
-          "⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น กรุณาตรวจสอบอีกครั้ง"
-      )
-    else:
-      # คำนวณวันทำการอัตโนมัติ (หักเสาร์-อาทิตย์ และวันหยุดราชการ)
-      th_holidays = (
-          holidays.TH(years=selected_ce_year) if HAS_HOLIDAYS else set()
-      )
-      working_days = 0
-      curr = d_start
-      while curr <= d_end:
-        if curr.weekday() < 5 and curr not in th_holidays:
-          working_days += 1
-        curr += timedelta(days=1)
-
-      calc_days = max(1, working_days) if working_days > 0 else 1
-      if d_start == d_end and "ครึ่งวัน" in final_note:
-        calc_days = 0.5
-      elif "ครึ่งวัน" in final_note and calc_days >= 0.5:
-        calc_days -= 0.5
-
-      st.markdown(
-          f"📌 **ระบบคำนวณจำนวนวันรอบนี้ให้อัตโนมัติ:**สอดคล้องกับช่วงเวลา"
-          f" **{calc_days} วัน**"
-      )
-
-    action_mode = st.radio(
-        "โหมดการบันทึกข้อมูล",
-        ["เพิ่มสะสมจากวันลาเดิม", "เขียนทับข้อมูลเดิมทั้งหมด"],
-        horizontal=True,
+  col_d1, col_d2 = st.columns(2)
+  with col_d1:
+    d_start = st.date_input(
+        "ตั้งแต่วันที่",
+        value=month_start_date,
+        min_value=month_start_date,
+        max_value=month_end_date,
+        key="d_start",
+    )
+  with col_d2:
+    d_end = st.date_input(
+        "ถึงวันที่",
+        value=month_start_date,
+        min_value=month_start_date,
+        max_value=month_end_date,
+        key="d_end",
     )
 
+  note_choice = st.selectbox(
+      "หมายเหตุ / ลักษณะการลา",
+      [
+          "- (ปกติ / เต็มวัน)",
+          "ลาครึ่งวันเช้า",
+          "ลาครึ่งวันบ่าย",
+          "✏️ พิมพ์ระบุหมายเหตุเอง...",
+      ],
+      key="d_note_choice",
+  )
+  final_note = "-"
+  if note_choice == "✏️ พิมพ์ระบุเอง...":
+    final_note = st.text_input(
+        "ระบุข้อความหมายเหตุเพิ่มเติม", value="", key="d_custom"
+    )
+  elif note_choice != "- (ปกติ / เต็มวัน)":
+    final_note = note_choice
+
+  action_mode = st.radio(
+      "โหมดการบันทึกข้อมูล",
+      ["เพิ่มสะสมจากวันลาเดิม", "เขียนทับข้อมูลเดิมทั้งหมด"],
+      horizontal=True,
+      key="d_mode",
+  )
+
+  is_date_invalid = d_end < d_start
+  if is_date_invalid:
+    st.error("⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น")
+  else:
+    th_holidays = holidays.TH(years=selected_ce_year) if HAS_HOLIDAYS else set()
+    working_days = 0
+    curr = d_start
+    while curr <= d_end:
+      if curr.weekday() < 5 and curr not in th_holidays:
+        working_days += 1
+      curr += timedelta(days=1)
+
+    calc_days = max(1, working_days) if working_days > 0 else 1
+    if d_start == d_end and "ครึ่งวัน" in final_note:
+      calc_days = 0.5
+    elif "ครึ่งวัน" in final_note and calc_days >= 0.5:
+      calc_days -= 0.5
+
+    st.info(f"📌 **จำนวนวันที่คำนวณได้:** `{calc_days} วัน`")
+
+  col_btn1, col_btn2 = st.columns(2)
+  with col_btn1:
     if st.button(
-        "💾 บันทึกข้อมูลลงตารางรายงาน",
+        "💾 บันทึกข้อมูล",
         type="primary",
         disabled=is_date_invalid,
+        use_container_width=True,
     ):
       formatted_start = format_thai_date(d_start)
       formatted_end = format_thai_date(d_end)
 
       df = st.session_state.leave_data
-      idx = df[df["ชื่อ - สกุล"] == target_emp].index
+      idx = df[df["ชื่อ - สกุล"] == emp_name].index
       if not idx.empty:
         i = idx[0]
         old_start = str(df.loc[i, "ตั้งแต่วันที่"])
@@ -260,11 +262,9 @@ with st.container(border=True):
         if "เพิ่มสะสม" in action_mode and old_start != "-":
           df.loc[i, "ตั้งแต่วันที่"] = f"{old_start}, {formatted_start}"
           df.loc[i, "ถึงวันที่"] = f"{old_end}, {formatted_end}"
-
           curr_s = float(old_sick) if old_sick != "-" else 0.0
           curr_k = float(old_kit) if old_kit != "-" else 0.0
           curr_t = float(old_total) if old_total != "-" else 0.0
-
           if leave_category == "ลาป่วย":
             df.loc[i, "ลาป่วย"] = str(curr_s + calc_days)
           else:
@@ -287,27 +287,40 @@ with st.container(border=True):
           df.loc[i, "รวม (วัน)"] = str(calc_days)
           df.loc[i, "หมายเหตุ"] = final_note
 
-        st.success(
-            f"บันทึกข้อมูลการลาของ {target_emp} ({calc_days} วัน) เรียบร้อยแล้ว!"
-        )
-        st.rerun()
-  else:
-    st.warning("ไม่มีรายชื่อพนักงานในระบบ")
+      st.success(f"บันทึกข้อมูลของ {emp_name} สำเร็จ!")
+      st.rerun()
+  with col_btn2:
+    if st.button("❌ ปิดหน้าต่าง", use_container_width=True):
+      st.rerun()
+
 
 # -------------------------------------------------------------------------
-# 4. ตารางสรุปข้อมูล (Single Source of Truth / Interactive Editor)
+# 4. ตารางแสดงข้อมูลหลัก (คลิกแถวเพื่อเด้ง Dialog)
 # -------------------------------------------------------------------------
-st.subheader("📊 ตารางสรุปข้อมูลและวันลาปัจจุบัน (สามารถปรับแต่งแก้ไขได้)")
-edited_df = st.data_editor(
-    st.session_state.leave_data,
-    num_rows="dynamic",
-    use_container_width=True,
-    key="employee_table_editor",
+st.subheader("📊 ตารางสรุปข้อมูลบุคลากรและวันลา")
+st.markdown(
+    "👉 **คลิกเลือกแถว (Row) ของพนักงานที่ต้องการบันทึกวันลา ระบบจะเปิดหน้าต่างป๊อปอัปให้ทันที**"
 )
-st.session_state.leave_data = edited_df
+
+event = st.dataframe(
+    st.session_state.leave_data,
+    use_container_width=True,
+    hide_index=True,
+    selection_mode="single-row",
+    on_select="rerun",
+    key="employee_table_selection",
+)
+
+# ตรวจสอบการคลิกเลือกแถวในตาราง
+selected_rows = event.selection.rows if hasattr(event, "selection") else []
+if selected_rows:
+  row_idx = selected_rows[0]
+  selected_emp_name = st.session_state.leave_data.iloc[row_idx]["ชื่อ - สกุล"]
+  # เรียกใช้งาน Modal Dialog
+  open_leave_dialog(selected_emp_name)
 
 # จัดการเพิ่ม/ลบรายชื่อบุคลากร
-with st.expander("➕ เพิ่มรายชื่อ / 🗑️ ลบรายชื่อพนักงานในสังกัด"):
+with st.expander("➕ เพิ่มรายชื่อพนักงานใหม่ / 🗑️ ลบรายชื่อพนักงาน"):
   add_col, del_col = st.columns(2)
   with add_col:
     with st.form("add_form", clear_on_submit=True):
@@ -335,6 +348,7 @@ with st.expander("➕ เพิ่มรายชื่อ / 🗑️ ลบร�
         st.success("เพิ่มรายชื่อสำเร็จ!")
         st.rerun()
   with del_col:
+    current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
     if current_names:
       with st.form("del_form"):
         del_n = st.selectbox("เลือกรายชื่อที่ต้องการลบออก", current_names)
@@ -456,9 +470,7 @@ def generate_excel_template(df, month, year, emp_type):
 
   sig_row = last_row + 3
   ws.merge_cells(f"F{sig_row}:I{sig_row}")
-  ws[f"F{sig_row}"] = (
-      "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
-  )
+  ws[f"F{sig_row}"] = "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
   ws[f"F{sig_row}"].font = font_normal
   ws[f"F{sig_row}"].alignment = align_center
 
@@ -474,7 +486,10 @@ def generate_excel_template(df, month, year, emp_type):
 st.subheader("📥 ดาวน์โหลดรายงานประจำเดือน")
 if st.button("📥 สร้างและดาวน์โหลดไฟล์ Excel ตามแบบฟอร์มราชการ", type="primary"):
   excel_file = generate_excel_template(
-      edited_df, selected_month, selected_year, employee_type
+      df=st.session_state.leave_data,
+      month=selected_month,
+      year=selected_year,
+      emp_type=employee_type,
   )
   data_as_bytes = excel_file.getvalue()
   st.download_button(
