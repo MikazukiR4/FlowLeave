@@ -100,9 +100,8 @@ with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
       "1. **เลือกงวดเวลา:** กำหนดเดือนและปีที่ต้องการสรุปรายงานด้านบน\n2."
-      " **บันทึกวันลา:** **คลิกเลือกแถวชื่อพนักงาน** ในตารางเพื่อเปิดฟอร์มบันทึก\n3."
-      " **หมายเหตุอัจฉริยะ:** พิมพ์รูปแบบการลาได้อิสระ เช่น *'ลาครึ่งวันเช้า'* หรือ"
-      " *'วันแรกเต็ม วันที่สองครึ่งวันบ่าย'* ระบบจะหัก 0.5 วันให้อัตโนมัติ"
+      " **บันทึกวันลา:** **คลิกแถวชื่อพนักงาน** ในตารางเพื่อจัดการประวัติการลา\n3."
+      " **เพิ่ม/ลบรายรายการ:** สามารถเพิ่มการลาหลายครั้งต่อคน หรือกดลบรายการที่ผิดพลาดได้ทันที"
   )
 
 thai_months = THAI_MONTH_FULL[1:]
@@ -133,7 +132,7 @@ month_end_date = datetime(
 ).date()
 
 # -------------------------------------------------------------------------
-# Session State Management
+# Session State Management (เก็บประวัติการลาแยกตามรายบุคคล)
 # -------------------------------------------------------------------------
 if (
     "current_emp_type" not in st.session_state
@@ -141,36 +140,97 @@ if (
 ):
   st.session_state.current_emp_type = employee_type
   emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
-  initial_rows = []
+  # เก็บประวัติการลาในรูปแบบดิกชันนารี: { ชื่อพนักงาน: [ {id, start, end, category, days, note}, ... ] }
+  st.session_state.leave_records = {emp["name"]: [] for emp in emp_list}
+
+# ฟังก์ชันสำหรับรวมข้อมูลจากประวัติรายบุคคล มาแปลงเป็น DataFrame แสดงผลในตารางหลัก
+def build_summary_dataframe():
+  emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
+  rows = []
   for idx, emp in enumerate(emp_list, 1):
-    initial_rows.append({
-        "ที่": idx,
-        "ชื่อ - สกุล": emp["name"],
-        "ตำแหน่ง": emp["position"],
-        "ตั้งแต่วันที่": "-",
-        "ถึงวันที่": "-",
-        "ลาป่วย": "-",
-        "ลากิจ": "-",
-        "รวม (วัน)": "-",
-        "หมายเหตุ": "-",
-    })
-  st.session_state.leave_data = pd.DataFrame(initial_rows)
+    name = emp["name"]
+    position = emp["position"]
+    records = st.session_state.leave_records.get(name, [])
+
+    if not records:
+      rows.append({
+          "ที่": idx,
+          "ชื่อ - สกุล": name,
+          "ตำแหน่ง": position,
+          "ตั้งแต่วันที่": "-",
+          "ถึงวันที่": "-",
+          "ลาป่วย": "-",
+          "ลากิจ": "-",
+          "รวม (วัน)": "-",
+          "หมายเหตุ": "-",
+      })
+    else:
+      # รวมข้อความตั้งแต่วันที่ / ถึงวันที่ / หมายเหตุ
+      starts = ", ".join([format_thai_date(r["start"]) for r in records])
+      ends = ", ".join([format_thai_date(r["end"]) for r in records])
+      notes = ", ".join([r["note"] for r in records if r["note"] != "-"])
+      if not notes:
+        notes = "-"
+
+      # รวมจำนวนวันลาป่วยและลากิจ
+      total_sick = sum([r["days"] for r in records if r["category"] == "ลาป่วย"])
+      total_kit = sum([r["days"] for r in records if r["category"] == "ลากิจ"])
+      total_all = total_sick + total_kit
+
+      rows.append({
+          "ที่": idx,
+          "ชื่อ - สกุล": name,
+          "ตำแหน่ง": position,
+          "ตั้งแต่วันที่": starts,
+          "ถึงวันที่": ends,
+          "ลาป่วย": str(total_sick) if total_sick > 0 else "-",
+          "ลากิจ": str(total_kit) if total_kit > 0 else "-",
+          "รวม (วัน)": str(total_all) if total_all > 0 else "-",
+          "หมายเหตุ": notes,
+      })
+  return pd.DataFrame(rows)
 
 st.info(
     f"📂 กำลังจัดการข้อมูลของ: **{employee_type}** ประจำเดือน**{selected_month}"
     f" {selected_year}**"
 )
 st.markdown(
-    "💡 *เคล็ดลับ: **คลิกเลือกแถวพนักงานในตารางด้านล่าง** เพื่อเปิดหน้าต่างบันทึกวันลาได้ทันที!*"
+    "💡 *เคล็ดลับ: **คลิกเลือกแถวพนักงานในตารางด้านล่าง** เพื่อดูประวัติการลา เพิ่มรายการใหม่ หรือลบรายการที่ผิดพลาดได้ทันที!*"
 )
 
 
 # -------------------------------------------------------------------------
-# Modal Dialog สำหรับเลือกวันลา (รองรับหมายเหตุอิสระและคำนวณอัจฉริยะ)
+# Modal Dialog สำหรับจัดการประวัติการลา (เพิ่ม / ลบ รายรายการ)
 # -------------------------------------------------------------------------
-@st.dialog("📅 บันทึก / อัปเดตวันลาบุคลากร", width="large")
+@st.dialog("📅 จัดการประวัติการลาบุคลากร", width="large")
 def open_leave_dialog(emp_name):
   st.markdown(f"### 👤 บุคลากร: **{emp_name}**")
+
+  # แสดงประวัติการลาที่มีอยู่แล้วในเดือนนี้
+  current_records = st.session_state.leave_records.get(emp_name, [])
+  
+  st.markdown("#### 📋 รายการลาที่บันทึกไว้แล้วในเดือนนี้:")
+  if not current_records:
+    st.info("ยังไม่มีประวัติการลาในเดือนนี้")
+  else:
+    for idx, rec in enumerate(current_records):
+      cols = st.columns([3, 2, 1, 3, 1])
+      with cols[0]:
+        st.markdown(f"**{rec['category']}** ({rec['days']} วัน)")
+      with cols[1]:
+        st.text(f"{format_thai_date(rec['start'])}")
+      with cols[2]:
+        st.text("ถึง")
+      with cols[3]:
+        st.text(f"{format_thai_date(rec['end'])} [{rec['note']}]")
+      with cols[4]:
+        if st.button("🗑️ ลบ", key=f"del_rec_{emp_name}_{idx}"):
+          st.session_state.leave_records[emp_name].pop(idx)
+          st.success("ลบรายการสำเร็จ!")
+          st.rerun()
+
+  st.markdown("---")
+  st.markdown("#### ➕ เพิ่มรายการลาใหม่:")
 
   leave_category = st.selectbox("ประเภทการลา", ["ลาป่วย", "ลากิจ"], key="d_cat")
 
@@ -192,26 +252,16 @@ def open_leave_dialog(emp_name):
         key="d_end",
     )
 
-  # ช่องพิมพ์หมายเหตุแบบอิสระ ใช้งานง่ายบนทุกอุปกรณ์
   custom_note = st.text_input(
-      "หมายเหตุ / ลักษณะการลา (พิมพ์ระบุได้อิสระ)",
+      "หมายเหตุ / ลักษณะการลา",
       value="-",
       placeholder="เช่น ลาครึ่งวันเช้า, วันแรกเต็ม วันที่สองครึ่งวันบ่าย",
       key="d_custom_note",
   )
 
-  action_mode = st.radio(
-      "โหมดการบันทึกข้อมูล",
-      ["เพิ่มสะสมจากวันลาเดิม", "เขียนทับข้อมูลเดิมทั้งหมด"],
-      horizontal=True,
-      key="d_mode",
-  )
-
   is_date_invalid = d_end < d_start
   if is_date_invalid:
-    st.error(
-        "⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น กรุณาตรวจสอบอีกครั้ง"
-    )
+    st.error("⚠️ วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น")
   else:
     th_holidays = holidays.TH(years=selected_ce_year) if HAS_HOLIDAYS else set()
     working_days = 0
@@ -222,70 +272,31 @@ def open_leave_dialog(emp_name):
       curr += timedelta(days=1)
 
     calc_days = max(1, working_days) if working_days > 0 else 1
-
-    # ระบบแกะรอยคำนวณอัจฉริยะจากข้อความหมายเหตุ
+    
     note_lower = custom_note.lower()
     if "ครึ่งวัน" in note_lower or "0.5" in note_lower:
-      # หากมีคำว่าครึ่งวัน ให้หักออก 0.5 วันโดยอัตโนมัติจากช่วงวันรวม
       if calc_days >= 0.5:
         calc_days -= 0.5
 
-    st.info(
-        f"📌 **จำนวนวันที่ระบบคำนวณให้:** `{calc_days} วัน` (อ้างอิงจากช่วงวัน"
-        f" และหมายเหตุ)"
-    )
+    st.info(f"📌 **จำนวนวันที่คำนวณได้สำหรับรายการนี้:** `{calc_days} วัน`")
 
   col_btn1, col_btn2 = st.columns(2)
   with col_btn1:
     if st.button(
-        "💾 บันทึกข้อมูล",
+        "➕ บันทึกเพิ่มรายการนี้",
         type="primary",
         disabled=is_date_invalid,
         use_container_width=True,
     ):
-      formatted_start = format_thai_date(d_start)
-      formatted_end = format_thai_date(d_end)
-
-      df = st.session_state.leave_data
-      idx = df[df["ชื่อ - สกุล"] == emp_name].index
-      if not idx.empty:
-        i = idx[0]
-        old_start = str(df.loc[i, "ตั้งแต่วันที่"])
-        old_end = str(df.loc[i, "ถึงวันที่"])
-        old_sick = str(df.loc[i, "ลาป่วย"])
-        old_kit = str(df.loc[i, "ลากิจ"])
-        old_total = str(df.loc[i, "รวม (วัน)"])
-        old_note = str(df.loc[i, "หมายเหตุ"])
-
-        if "เพิ่มสะสม" in action_mode and old_start != "-":
-          df.loc[i, "ตั้งแต่วันที่"] = f"{old_start}, {formatted_start}"
-          df.loc[i, "ถึงวันที่"] = f"{old_end}, {formatted_end}"
-          curr_s = float(old_sick) if old_sick != "-" else 0.0
-          curr_k = float(old_kit) if old_kit != "-" else 0.0
-          curr_t = float(old_total) if old_total != "-" else 0.0
-          if leave_category == "ลาป่วย":
-            df.loc[i, "ลาป่วย"] = str(curr_s + calc_days)
-          else:
-            df.loc[i, "ลากิจ"] = str(curr_k + calc_days)
-          df.loc[i, "รวม (วัน)"] = str(curr_t + calc_days)
-          df.loc[i, "หมายเหตุ"] = (
-              f"{old_note}, {custom_note}"
-              if old_note != "-" and custom_note != "-"
-              else (custom_note if custom_note != "-" else old_note)
-          )
-        else:
-          df.loc[i, "ตั้งแต่วันที่"] = formatted_start
-          df.loc[i, "ถึงวันที่"] = formatted_end
-          df.loc[i, "ลาป่วย"] = (
-              str(calc_days) if leave_category == "ลาป่วย" else "-"
-          )
-          df.loc[i, "ลากิจ"] = (
-              str(calc_days) if leave_category == "ลากิจ" else "-"
-          )
-          df.loc[i, "รวม (วัน)"] = str(calc_days)
-          df.loc[i, "หมายเหตุ"] = custom_note
-
-      st.success(f"บันทึกข้อมูลของ {emp_name} สำเร็จ!")
+      new_entry = {
+          "start": d_start,
+          "end": d_end,
+          "category": leave_category,
+          "days": calc_days,
+          "note": custom_note if custom_note else "-"
+      }
+      st.session_state.leave_records[emp_name].append(new_entry)
+      st.success("เพิ่มรายการลาสำเร็จ!")
       st.rerun()
   with col_btn2:
     if st.button("❌ ปิดหน้าต่าง", use_container_width=True):
@@ -293,15 +304,16 @@ def open_leave_dialog(emp_name):
 
 
 # -------------------------------------------------------------------------
-# 4. ตารางแสดงข้อมูลหลัก (คลิกแถวเพื่อเด้ง Dialog)
+# 4. ตารางแสดงข้อมูลหลัก
 # -------------------------------------------------------------------------
-st.subheader("📊 ตารางสรุปข้อมูลบุคลากรและวันลา")
+st.subheader("📊 ตารางสรุปข้อมูลบุคลากรและวันลาประจำเดือน")
 st.markdown(
-    "👉 **คลิกเลือกแถว (Row) ของพนักงานที่ต้องการบันทึกวันลา ระบบจะเปิดหน้าต่างป๊อปอัปให้ทันที**"
+    "👉 **คลิกเลือกแถว (Row) ของพนักงานในตาราง เพื่อเพิ่มหรือลบประวัติการลา**"
 )
 
+df_display = build_summary_dataframe()
 event = st.dataframe(
-    st.session_state.leave_data,
+    df_display,
     use_container_width=True,
     hide_index=True,
     selection_mode="single-row",
@@ -312,10 +324,10 @@ event = st.dataframe(
 selected_rows = event.selection.rows if hasattr(event, "selection") else []
 if selected_rows:
   row_idx = selected_rows[0]
-  selected_emp_name = st.session_state.leave_data.iloc[row_idx]["ชื่อ - สกุล"]
+  selected_emp_name = df_display.iloc[row_idx]["ชื่อ - สกุล"]
   open_leave_dialog(selected_emp_name)
 
-# จัดการเพิ่ม/ลบรายชื่อบุคลากร
+# จัดการเพิ่ม/ลบรายชื่อบุคลากรในสังกัด
 with st.expander("➕ เพิ่มรายชื่อพนักงานใหม่ / 🗑️ ลบรายชื่อพนักงาน"):
   add_col, del_col = st.columns(2)
   with add_col:
@@ -323,39 +335,23 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
       new_n = st.text_input("ชื่อ - สกุลใหม่")
       new_p = st.text_input("ตำแหน่งใหม่")
       if st.form_submit_button("➕ เพิ่มพนักงาน") and new_n:
-        new_row = {
-            "ที่": len(st.session_state.leave_data) + 1,
-            "ชื่อ - สกุล": new_n,
-            "ตำแหน่ง": new_p or "-",
-            "ตั้งแต่วันที่": "-",
-            "ถึงวันที่": "-",
-            "ลาป่วย": "-",
-            "ลากิจ": "-",
-            "รวม (วัน)": "-",
-            "หมายเหตุ": "-",
-        }
-        st.session_state.leave_data = pd.concat(
-            [st.session_state.leave_data, pd.DataFrame([new_row])],
-            ignore_index=True,
-        )
-        st.session_state.leave_data["ที่"] = range(
-            1, len(st.session_state.leave_data) + 1
-        )
-        st.success("เพิ่มรายชื่อสำเร็จ!")
-        st.rerun()
+        if new_n not in st.session_state.leave_records:
+          st.session_state.leave_records[new_n] = []
+          # บันทึก Master List ชั่วคราวใน session ถ้ายุคนี้เลือกประเภทนั้นอยู่
+          DEFAULT_EMPLOYEES[employee_type].append({"name": new_n, "position": new_p or "-"})
+          st.success("เพิ่มรายชื่อสำเร็จ!")
+          st.rerun()
+        else:
+          st.warning("มีชื่อนี้อยู่ในระบบแล้ว")
   with del_col:
-    current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
+    current_names = [emp["name"] for emp in DEFAULT_EMPLOYEES.get(employee_type, [])]
     if current_names:
       with st.form("del_form"):
         del_n = st.selectbox("เลือกรายชื่อที่ต้องการลบออก", current_names)
         if st.form_submit_button("🗑️ ลบพนักงานออก") and del_n:
-          st.session_state.leave_data = st.session_state.leave_data[
-              st.session_state.leave_data["ชื่อ - สกุล"] != del_n
-          ].reset_index(drop=True)
-          if not st.session_state.leave_data.empty:
-            st.session_state.leave_data["ที่"] = range(
-                1, len(st.session_state.leave_data) + 1
-            )
+          DEFAULT_EMPLOYEES[employee_type] = [emp for emp in DEFAULT_EMPLOYEES[employee_type] if emp["name"] != del_n]
+          if del_n in st.session_state.leave_records:
+            del st.session_state.leave_records[del_n]
           st.success("ลบรายชื่อสำเร็จ!")
           st.rerun()
 
@@ -482,7 +478,7 @@ def generate_excel_template(df, month, year, emp_type):
 st.subheader("📥 ดาวน์โหลดรายงานประจำเดือน")
 if st.button("📥 สร้างและดาวน์โหลดไฟล์ Excel ตามแบบฟอร์มราชการ", type="primary"):
   excel_file = generate_excel_template(
-      df=st.session_state.leave_data,
+      df=df_display,
       month=selected_month,
       year=selected_year,
       emp_type=employee_type,
