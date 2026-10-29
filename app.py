@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 import re
-import holidays
 import io
 import os
 import openpyxl
@@ -9,16 +8,19 @@ from openpyxl.styles.fonts import DEFAULT_FONT
 import pandas as pd
 import streamlit as st
 
-# ตั้งค่าหน้าเว็บ
+# ป้องกันข้อผิดพลาดกรณีไม่มีไลบรารี holidays
+try:
+  import holidays
+
+  HAS_HOLIDAYS = True
+except ImportError:
+  HAS_HOLIDAYS = False
+
 st.set_page_config(
     page_title="ระบบสรุปวันลาประจำเดือน", page_icon="📅", layout="wide"
 )
-
 st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ)")
 
-# -------------------------------------------------------------------------
-# 1. ข้อมูลรายชื่อพนักงานตั้งต้น (Master List ตามรูปแบบ Template)
-# -------------------------------------------------------------------------
 DEFAULT_EMPLOYEES = {
     "พนักงานจ้างเหมาเอกชน": [
         {
@@ -81,14 +83,14 @@ def format_thai_date(date_obj):
     return "-"
   day = date_obj.day
   month = THAI_MONTH_FULL[date_obj.month]
-  year_thai = date_obj.year + 543  # แปลง ค.ศ. เป็น พ.ศ. เต็ม (เช่น 2569)
+  year_thai = date_obj.year + 543
   return f"{day} {month} {year_thai}"
 
 
 with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
-      "1. เลือกเดือน ปี และประเภทพนักงานด้านบน\n2. เลือกช่วงวันลา (ระบบจะตรวจสอบห้ามเลือกวันสิ้นสุดก่อนวันเริ่มต้น)\n3. เลือกหมายเหตุ/ลักษณะการลา (คำนวณ 0.5 วันให้อัตโนมัติ)\n4. กดสร้างและดาวน์โหลดไฟล์ Excel"
+      "1. เลือกเดือน ปี และประเภทพนักงาน\n2. เลือกช่วงวันลา (ระบบป้องกันการเลือกวันย้อนหลัง)\n3. เลือกหมายเหตุ/ลักษณะการลา\n4. กดสร้างและดาวน์โหลดไฟล์ Excel"
   )
 
 thai_months = [
@@ -123,16 +125,12 @@ selected_month_num = thai_months.index(selected_month) + 1
 selected_ce_year = selected_year - 543
 default_picker_date = datetime(selected_ce_year, selected_month_num, 1)
 
-# -------------------------------------------------------------------------
-# 2. จัดการ Session State สำหรับเก็บข้อมูลตารางและบุคลากร
-# -------------------------------------------------------------------------
 if (
     "current_emp_type" not in st.session_state
     or st.session_state.current_emp_type != employee_type
 ):
   st.session_state.current_emp_type = employee_type
   emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
-
   initial_rows = []
   for idx, emp in enumerate(emp_list, 1):
     initial_rows.append({
@@ -153,19 +151,14 @@ st.info(
     f" {selected_year}**"
 )
 
-# -------------------------------------------------------------------------
-# 3. ส่วนบันทึกวันลา (ป้องปรามการเลือกวันย้อนหลัง และฟอร์แมต พ.ศ.)
-# -------------------------------------------------------------------------
 st.subheader("📅 บันทึก/อัปเดตวันลาประจำเดือน")
 with st.container(border=True):
   current_names = st.session_state.leave_data["ชื่อ - สกุล"].tolist()
   if current_names:
-    tab_calendar, tab_quick = st.tabs(
-        [
-            "🗓️ เลือกช่วงวันที่จากปฏิทิน (Datepicker)",
-            "⚡ พิมพ์ระบุวันที่แบบย่อ (เช่น 1 หรือ 1-3)",
-        ]
-    )
+    tab_calendar, tab_quick = st.tabs([
+        "🗓️ เลือกช่วงวันที่จากปฏิทิน (Datepicker)",
+        "⚡ พิมพ์ระบุวันที่แบบย่อ (เช่น 1 หรือ 1-3)",
+    ])
 
     with tab_calendar:
       col_p1, col_p2, col_p3, col_p4 = st.columns(4)
@@ -184,12 +177,11 @@ with st.container(border=True):
             "ถึงวันที่", value=default_picker_date, key="c_end"
         )
 
-      # ตรวจสอบความถูกต้อง: ห้ามให้วันสิ้นสุดน้อยกว่าวันเริ่มต้น
       is_date_invalid = d_end < d_start
-
       if is_date_invalid:
         st.error(
-            "⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น กรุณาเลือกใหม่"
+            "⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น"
+            " กรุณาเลือกใหม่"
         )
 
       col_n1, col_n2 = st.columns([2, 1])
@@ -220,10 +212,9 @@ with st.container(border=True):
             key="c_mode",
         )
 
-      # คำนวณวันทำการ (เฉพาะกรณีวันที่ถูกต้อง)
       calc_days = 0
       if not is_date_invalid:
-        th_holidays = holidays.TH(years=d_start.year)
+        th_holidays = holidays.TH(years=d_start.year) if HAS_HOLIDAYS else set()
         working_days = 0
         curr = d_start
         while curr <= d_end:
@@ -238,14 +229,11 @@ with st.container(border=True):
           calc_days -= 0.5
 
         st.success(
-            f"📌 **ระบบคำนวณจำนวนวันรอบนี้ให้อัตโนมัติ:** `{calc_days} วัน`"
+            f"📌 **ระบบคำนวณจำนวนวันรอบนี้ให้อัตโนมัติ:** `{calc_days}` วัน"
         )
 
-      # ปุ่มบันทึกจะถูกปิดการใช้งาน (Disable) ทันทีหากเลือกวันผิด
       if st.button(
-          "💾 บันทึกวันลาลงตาราง",
-          key="btn_c",
-          disabled=is_date_invalid,
+          "💾 บันทึกวันลาลงตาราง", key="btn_c", disabled=is_date_invalid
       ):
         formatted_start = format_thai_date(d_start)
         formatted_end = format_thai_date(d_end)
@@ -295,9 +283,7 @@ with st.container(border=True):
           st.rerun()
 
     with tab_quick:
-      st.markdown(
-          "💡 *พิมพ์ระบุวันที่แบบย่อตามเดือนที่เลือก เช่น `1` หรือ `1-3`*"
-      )
+      st.markdown("💡 *พิมพ์ระบุวันที่แบบย่อ เช่น `1` หรือ `1-3`*")
       q_emp = st.selectbox("เลือกบุคลากร", current_names, key="q_emp")
       q_cat = st.selectbox("ประเภทการลา", ["ลาป่วย", "ลากิจ"], key="q_cat")
 
@@ -341,7 +327,11 @@ with st.container(border=True):
               formatted_start = format_thai_date(d_start_q)
               formatted_end = format_thai_date(d_end_q)
 
-              th_holidays = holidays.TH(years=selected_ce_year)
+              th_holidays = (
+                  holidays.TH(years=selected_ce_year)
+                  if HAS_HOLIDAYS
+                  else set()
+              )
               w_days = 0
               curr = d_start_q
               while curr <= d_end_q:
@@ -405,9 +395,6 @@ with st.container(border=True):
   else:
     st.warning("ไม่มีรายชื่อพนักงานในระบบ")
 
-# -------------------------------------------------------------------------
-# 4. ตารางหลักแสดงผลข้อมูล (Data Editor)
-# -------------------------------------------------------------------------
 st.subheader("1. ตารางสรุปข้อมูลบุคลากรและวันลาปัจจุบัน")
 edited_df = st.data_editor(
     st.session_state.leave_data,
@@ -417,7 +404,6 @@ edited_df = st.data_editor(
 )
 st.session_state.leave_data = edited_df
 
-# ส่วนจัดการเพิ่ม/ลบพนักงาน
 with st.expander("➕ เพิ่ม / 🗑️ ลบ รายชื่อพนักงาน"):
   col_add, col_del = st.columns(2)
   with col_add:
@@ -460,9 +446,6 @@ with st.expander("➕ เพิ่ม / 🗑️ ลบ รายชื่อพ�
           st.success("ลบสำเร็จ!")
           st.rerun()
 
-# -------------------------------------------------------------------------
-# 5. ฟังก์ชันสร้าง Excel ตามรูปแบบ Template ราชการ
-# -------------------------------------------------------------------------
 DEFAULT_FONT.name = "TH SarabunPSK"
 DEFAULT_FONT.size = 14
 
@@ -567,7 +550,9 @@ def generate_excel_template(df, month, year, emp_type):
 
   sig_row = last_row + 3
   ws.merge_cells(f"F{sig_row}:I{sig_row}")
-  ws[f"F{sig_row}"] = "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
+  ws[f"F{sig_row}"] = (
+      "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
+  )
   ws[f"F{sig_row}"].font = font_normal
   ws[f"F{sig_row}"].alignment = align_center
 
@@ -577,15 +562,11 @@ def generate_excel_template(df, month, year, emp_type):
   return output
 
 
-# -------------------------------------------------------------------------
-# 6. ปุ่มดาวน์โหลดไฟล์
-# -------------------------------------------------------------------------
 st.subheader("2. ดาวน์โหลดรายงาน")
 if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร์มราชการ"):
   excel_file = generate_excel_template(
       edited_df, selected_month, selected_year, employee_type
   )
-
   data_as_bytes = excel_file.getvalue()
   st.download_button(
       label="💾 บันทึกไฟล์ .xlsx",
@@ -593,6 +574,8 @@ if st.button("📥 สร้างไฟล์ Excel ตามแบบฟอร
       file_name=(
           f"สรุปวันลา_{employee_type}_{selected_month}_{selected_year}.xlsx"
       ),
-      mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      mime=(
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      ),
   )
   st.success("สร้างไฟล์สำเร็จ! พร้อมนำไปใช้งานต่อได้ทันทีครับ")
