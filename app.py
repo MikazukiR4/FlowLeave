@@ -132,7 +132,7 @@ month_end_date = datetime(
 ).date()
 
 # -------------------------------------------------------------------------
-# Session State Management (เก็บประวัติการลาแยกตามรายบุคคล)
+# Session State Management
 # -------------------------------------------------------------------------
 if (
     "current_emp_type" not in st.session_state
@@ -140,10 +140,13 @@ if (
 ):
   st.session_state.current_emp_type = employee_type
   emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
-  # เก็บประวัติการลาในรูปแบบดิกชันนารี: { ชื่อพนักงาน: [ {id, start, end, category, days, note}, ... ] }
   st.session_state.leave_records = {emp["name"]: [] for emp in emp_list}
 
-# ฟังก์ชันสำหรับรวมข้อมูลจากประวัติรายบุคคล มาแปลงเป็น DataFrame แสดงผลในตารางหลัก
+# ตัวแปรควบคุมการเปิด/ปิด Dialog ป้องกันบั๊กลูป
+if "selected_employee" not in st.session_state:
+  st.session_state.selected_employee = None
+
+
 def build_summary_dataframe():
   emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
   rows = []
@@ -165,14 +168,12 @@ def build_summary_dataframe():
           "หมายเหตุ": "-",
       })
     else:
-      # รวมข้อความตั้งแต่วันที่ / ถึงวันที่ / หมายเหตุ
       starts = ", ".join([format_thai_date(r["start"]) for r in records])
       ends = ", ".join([format_thai_date(r["end"]) for r in records])
       notes = ", ".join([r["note"] for r in records if r["note"] != "-"])
       if not notes:
         notes = "-"
 
-      # รวมจำนวนวันลาป่วยและลากิจ
       total_sick = sum([r["days"] for r in records if r["category"] == "ลาป่วย"])
       total_kit = sum([r["days"] for r in records if r["category"] == "ลากิจ"])
       total_all = total_sick + total_kit
@@ -190,6 +191,7 @@ def build_summary_dataframe():
       })
   return pd.DataFrame(rows)
 
+
 st.info(
     f"📂 กำลังจัดการข้อมูลของ: **{employee_type}** ประจำเดือน**{selected_month}"
     f" {selected_year}**"
@@ -200,15 +202,14 @@ st.markdown(
 
 
 # -------------------------------------------------------------------------
-# Modal Dialog สำหรับจัดการประวัติการลา (เพิ่ม / ลบ รายรายการ)
+# Modal Dialog สำหรับจัดการประวัติการลา
 # -------------------------------------------------------------------------
 @st.dialog("📅 จัดการประวัติการลาบุคลากร", width="large")
 def open_leave_dialog(emp_name):
   st.markdown(f"### 👤 บุคลากร: **{emp_name}**")
 
-  # แสดงประวัติการลาที่มีอยู่แล้วในเดือนนี้
   current_records = st.session_state.leave_records.get(emp_name, [])
-  
+
   st.markdown("#### 📋 รายการลาที่บันทึกไว้แล้วในเดือนนี้:")
   if not current_records:
     st.info("ยังไม่มีประวัติการลาในเดือนนี้")
@@ -272,7 +273,7 @@ def open_leave_dialog(emp_name):
       curr += timedelta(days=1)
 
     calc_days = max(1, working_days) if working_days > 0 else 1
-    
+
     note_lower = custom_note.lower()
     if "ครึ่งวัน" in note_lower or "0.5" in note_lower:
       if calc_days >= 0.5:
@@ -293,13 +294,15 @@ def open_leave_dialog(emp_name):
           "end": d_end,
           "category": leave_category,
           "days": calc_days,
-          "note": custom_note if custom_note else "-"
+          "note": custom_note if custom_note else "-",
       }
       st.session_state.leave_records[emp_name].append(new_entry)
       st.success("เพิ่มรายการลาสำเร็จ!")
       st.rerun()
   with col_btn2:
     if st.button("❌ ปิดหน้าต่าง", use_container_width=True):
+      # เคลียร์ค่าตัวแปรเพื่อไม่ให้ Dialog เด้งซ้ำตอนรีรัน
+      st.session_state.selected_employee = None
       st.rerun()
 
 
@@ -321,11 +324,15 @@ event = st.dataframe(
     key="employee_table_selection",
 )
 
+# ตรวจสอบการเลือกแถวจากตาราง
 selected_rows = event.selection.rows if hasattr(event, "selection") else []
 if selected_rows:
   row_idx = selected_rows[0]
-  selected_emp_name = df_display.iloc[row_idx]["ชื่อ - สกุล"]
-  open_leave_dialog(selected_emp_name)
+  st.session_state.selected_employee = df_display.iloc[row_idx]["ชื่อ - สกุล"]
+
+# ถ้ามีชื่อถูกเลือก ให้เปิด Dialog ทันที
+if st.session_state.selected_employee:
+  open_leave_dialog(st.session_state.selected_employee)
 
 # จัดการเพิ่ม/ลบรายชื่อบุคลากรในสังกัด
 with st.expander("➕ เพิ่มรายชื่อพนักงานใหม่ / 🗑️ ลบรายชื่อพนักงาน"):
@@ -337,19 +344,26 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
       if st.form_submit_button("➕ เพิ่มพนักงาน") and new_n:
         if new_n not in st.session_state.leave_records:
           st.session_state.leave_records[new_n] = []
-          # บันทึก Master List ชั่วคราวใน session ถ้ายุคนี้เลือกประเภทนั้นอยู่
-          DEFAULT_EMPLOYEES[employee_type].append({"name": new_n, "position": new_p or "-"})
+          DEFAULT_EMPLOYEES[employee_type].append(
+              {"name": new_n, "position": new_p or "-"}
+          )
           st.success("เพิ่มรายชื่อสำเร็จ!")
           st.rerun()
         else:
           st.warning("มีชื่อนี้อยู่ในระบบแล้ว")
   with del_col:
-    current_names = [emp["name"] for emp in DEFAULT_EMPLOYEES.get(employee_type, [])]
+    current_names = [
+        emp["name"] for emp in DEFAULT_EMPLOYEES.get(employee_type, [])
+    ]
     if current_names:
       with st.form("del_form"):
         del_n = st.selectbox("เลือกรายชื่อที่ต้องการลบออก", current_names)
         if st.form_submit_button("🗑️ ลบพนักงานออก") and del_n:
-          DEFAULT_EMPLOYEES[employee_type] = [emp for emp in DEFAULT_EMPLOYEES[employee_type] if emp["name"] != del_n]
+          DEFAULT_EMPLOYEES[employee_type] = [
+              emp
+              for emp in DEFAULT_EMPLOYEES[employee_type]
+              if emp["name"] != del_n
+          ]
           if del_n in st.session_state.leave_records:
             del st.session_state.leave_records[del_n]
           st.success("ลบรายชื่อสำเร็จ!")
