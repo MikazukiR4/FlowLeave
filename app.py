@@ -100,9 +100,9 @@ with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
       "1. **เลือกงวดเวลา:** กำหนดเดือนและปีที่ต้องการสรุปรายงานด้านบน\n2."
-      " **บันทึกวันลา:** **คลิกเลือกแถวชื่อพนักงาน** ในตาราง ระบบจะเด้งหน้าต่าง"
-      " Datepicker ขึ้นมาให้ทันที\n3. **ดาวน์โหลด:** ตรวจสอบข้อมูลแล้วกดสร้างไฟล์"
-      " Excel ได้เลย"
+      " **บันทึกวันลา:** **คลิกเลือกแถวชื่อพนักงาน** ในตารางเพื่อเปิดฟอร์มบันทึก\n3."
+      " **หมายเหตุอัจฉริยะ:** พิมพ์รูปแบบการลาได้อิสระ เช่น *'ลาครึ่งวันเช้า'* หรือ"
+      " *'วันแรกเต็ม วันที่สองครึ่งวันบ่าย'* ระบบจะหัก 0.5 วันให้อัตโนมัติ"
   )
 
 thai_months = THAI_MONTH_FULL[1:]
@@ -161,12 +161,12 @@ st.info(
     f" {selected_year}**"
 )
 st.markdown(
-    "💡 *เคล็ดลับ: **คลิกเลือกแถวพนักงานในตารางด้านล่าง** เพื่อเปิดหน้าต่างบันทึกวันลาแบบป๊อปอัปได้ทันที!*"
+    "💡 *เคล็ดลับ: **คลิกเลือกแถวพนักงานในตารางด้านล่าง** เพื่อเปิดหน้าต่างบันทึกวันลาได้ทันที!*"
 )
 
 
 # -------------------------------------------------------------------------
-# Modal Dialog สำหรับเลือกวันลา (เด้งขึ้นมาเมื่อคลิกแถวในตาราง)
+# Modal Dialog สำหรับเลือกวันลา (รองรับหมายเหตุอิสระและคำนวณอัจฉริยะ)
 # -------------------------------------------------------------------------
 @st.dialog("📅 บันทึก / อัปเดตวันลาบุคลากร", width="large")
 def open_leave_dialog(emp_name):
@@ -192,23 +192,13 @@ def open_leave_dialog(emp_name):
         key="d_end",
     )
 
-  note_choice = st.selectbox(
-      "หมายเหตุ / ลักษณะการลา",
-      [
-          "- (ปกติ / เต็มวัน)",
-          "ลาครึ่งวันเช้า",
-          "ลาครึ่งวันบ่าย",
-          "✏️ พิมพ์ระบุหมายเหตุเอง...",
-      ],
-      key="d_note_choice",
+  # ช่องพิมพ์หมายเหตุแบบอิสระ ใช้งานง่ายบนทุกอุปกรณ์
+  custom_note = st.text_input(
+      "หมายเหตุ / ลักษณะการลา (พิมพ์ระบุได้อิสระ)",
+      value="-",
+      placeholder="เช่น ลาครึ่งวันเช้า, วันแรกเต็ม วันที่สองครึ่งวันบ่าย",
+      key="d_custom_note",
   )
-  final_note = "-"
-  if note_choice == "✏️ พิมพ์ระบุเอง...":
-    final_note = st.text_input(
-        "ระบุข้อความหมายเหตุเพิ่มเติม", value="", key="d_custom"
-    )
-  elif note_choice != "- (ปกติ / เต็มวัน)":
-    final_note = note_choice
 
   action_mode = st.radio(
       "โหมดการบันทึกข้อมูล",
@@ -219,7 +209,9 @@ def open_leave_dialog(emp_name):
 
   is_date_invalid = d_end < d_start
   if is_date_invalid:
-    st.error("⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น")
+    st.error(
+        "⚠️ ข้อผิดพลาด: วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น กรุณาตรวจสอบอีกครั้ง"
+    )
   else:
     th_holidays = holidays.TH(years=selected_ce_year) if HAS_HOLIDAYS else set()
     working_days = 0
@@ -230,12 +222,18 @@ def open_leave_dialog(emp_name):
       curr += timedelta(days=1)
 
     calc_days = max(1, working_days) if working_days > 0 else 1
-    if d_start == d_end and "ครึ่งวัน" in final_note:
-      calc_days = 0.5
-    elif "ครึ่งวัน" in final_note and calc_days >= 0.5:
-      calc_days -= 0.5
 
-    st.info(f"📌 **จำนวนวันที่คำนวณได้:** `{calc_days} วัน`")
+    # ระบบแกะรอยคำนวณอัจฉริยะจากข้อความหมายเหตุ
+    note_lower = custom_note.lower()
+    if "ครึ่งวัน" in note_lower or "0.5" in note_lower:
+      # หากมีคำว่าครึ่งวัน ให้หักออก 0.5 วันโดยอัตโนมัติจากช่วงวันรวม
+      if calc_days >= 0.5:
+        calc_days -= 0.5
+
+    st.info(
+        f"📌 **จำนวนวันที่ระบบคำนวณให้:** `{calc_days} วัน` (อ้างอิงจากช่วงวัน"
+        f" และหมายเหตุ)"
+    )
 
   col_btn1, col_btn2 = st.columns(2)
   with col_btn1:
@@ -271,9 +269,9 @@ def open_leave_dialog(emp_name):
             df.loc[i, "ลากิจ"] = str(curr_k + calc_days)
           df.loc[i, "รวม (วัน)"] = str(curr_t + calc_days)
           df.loc[i, "หมายเหตุ"] = (
-              f"{old_note}, {final_note}"
-              if old_note != "-" and final_note != "-"
-              else (final_note if final_note != "-" else old_note)
+              f"{old_note}, {custom_note}"
+              if old_note != "-" and custom_note != "-"
+              else (custom_note if custom_note != "-" else old_note)
           )
         else:
           df.loc[i, "ตั้งแต่วันที่"] = formatted_start
@@ -285,7 +283,7 @@ def open_leave_dialog(emp_name):
               str(calc_days) if leave_category == "ลากิจ" else "-"
           )
           df.loc[i, "รวม (วัน)"] = str(calc_days)
-          df.loc[i, "หมายเหตุ"] = final_note
+          df.loc[i, "หมายเหตุ"] = custom_note
 
       st.success(f"บันทึกข้อมูลของ {emp_name} สำเร็จ!")
       st.rerun()
@@ -311,12 +309,10 @@ event = st.dataframe(
     key="employee_table_selection",
 )
 
-# ตรวจสอบการคลิกเลือกแถวในตาราง
 selected_rows = event.selection.rows if hasattr(event, "selection") else []
 if selected_rows:
   row_idx = selected_rows[0]
   selected_emp_name = st.session_state.leave_data.iloc[row_idx]["ชื่อ - สกุล"]
-  # เรียกใช้งาน Modal Dialog
   open_leave_dialog(selected_emp_name)
 
 # จัดการเพิ่ม/ลบรายชื่อบุคลากร
