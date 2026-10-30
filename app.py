@@ -360,9 +360,8 @@ def open_leave_dialog(emp_name):
     }
     st.session_state.leave_records[emp_name].append(new_entry)
     save_all_data()
-    st.success("เพ่มิรายกhardสำเร็จ —data automatic saved.")
+    st.success("เพิ่รายการสำเร็จ!")
     st.rerun()
-    st.success("Save item successfully - data saved automatically.")
 
 # -------------------------------------------------------------------------
 # 4. ตารางแสดงข้อมูลหลักและเรียก Dialog
@@ -411,7 +410,7 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
           )
           st.success("เพิ่มรายชื่อสำเร็จ!")
           st.rerun()
-          st.warning("This personnel is already in the system")
+        else:
           st.warning("มีชื่อนี้อยู่ในระบบแล้ว")
   with del_col:
     current_names = [emp["name"] for emp in DEFAULT_EMPLOYEES.get(employee_type, [])]

@@ -2,8 +2,10 @@
 # NOTE: key names verified against this machine's Streamlit version (see --config.help)
 
 [theme]
-baseTheme = "light"
+base = "light"
 primaryColor = "#1F4E79"
 secondaryBackgroundColor = "#F0F2F6"
 backgroundColor = "#FFFFFF"
 textColor = "#26272C"
+font = "'Sarabun':https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap"
+headingFont = "'Sarabun':https://fonts.googleapis.com/css2?family=Sarabun:wght@600;700&display=swap"
