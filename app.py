@@ -325,31 +325,41 @@ st.info(
 
 
 # -------------------------------------------------------------------------
-# 6. ตารางสรุปบน UI
+# 6. ตารางสรุปบน UI (แยกบรรทัดตามแต่ละ Range การลา)
 # -------------------------------------------------------------------------
 def build_summary_dataframe():
   rows = []
   for idx, emp in enumerate(employees.get(employee_type, []), 1):
     recs = month_records(emp["name"])
-    sick = sum(r["days"] for r in recs if r["category"] == "ลาป่วย")
-    kit = sum(r["days"] for r in recs if r["category"] == "ลากิจ")
-    lines = []
-    for r in recs:
-      desc = describe(r)
-      lines.append(
-          f"{r['category']} {r['days']:g} วัน" + (f" ({desc})" if desc else "")
-      )
-    rows.append({
-        "ที่": idx,
-        "ชื่อ - สกุล": emp["name"],
-        "ตำแหน่ง": emp["position"],
-        "ตั้งแต่วันที่": "\n".join(format_thai_date(r["start"]) for r in recs) or "-",
-        "ถึงวันที่": "\n".join(format_thai_date(r["end"]) for r in recs) or "-",
-        "ลาป่วย": fmt_days(sick),
-        "ลากิจ": fmt_days(kit),
-        "รวม (วัน)": fmt_days(sick + kit),
-        "หมายเหตุ": "\n".join(lines) or "-",
-    })
+    if not recs:
+      rows.append({
+          "ที่": idx,
+          "ชื่อ - สกุล": emp["name"],
+          "ตำแหน่ง": emp["position"],
+          "ตั้งแต่วันที่": "-",
+          "ถึงวันที่": "-",
+          "ลาป่วย": "-",
+          "ลากิจ": "-",
+          "รวม (วัน)": "-",
+          "หมายเหตุ": "-",
+      })
+    else:
+      total_sick = sum(r["days"] for r in recs if r["category"] == "ลาป่วย")
+      total_kit = sum(r["days"] for r in recs if r["category"] == "ลากิจ")
+      for i, r in enumerate(recs):
+        desc = describe(r)
+        note_str = f"{r['category']} {r['days']:g} วัน" + (f" ({desc})" if desc else "")
+        rows.append({
+            "ที่": idx if i == 0 else "",
+            "ชื่อ - สกุล": emp["name"] if i == 0 else "",
+            "ตำแหน่ง": emp["position"] if i == 0 else "",
+            "ตั้งแต่วันที่": format_thai_date(r["start"]),
+            "ถึงวันที่": format_thai_date(r["end"]),
+            "ลาป่วย": fmt_days(r["days"] if r["category"] == "ลาป่วย" else 0),
+            "ลากิจ": fmt_days(r["days"] if r["category"] == "ลากิจ" else 0),
+            "รวม (วัน)": fmt_days(total_sick + total_kit) if i == 0 else "",
+            "หมายเหตุ": note_str,
+        })
   return pd.DataFrame(rows, columns=COLUMNS)
 
 
@@ -432,14 +442,22 @@ def leave_dialog(emp_name):
   st.info(f"📌 **รวม {days:g} วัน**  \n{' · '.join(detail)}")
 
   if st.button("➕ บันทึกเพิ่มรายการนี้", type="primary", use_container_width=True):
-    records.setdefault(emp_name, []).append({
-        "start": d_start, "end": d_end, "category": category,
-        "days": days, "first": first, "last": last, "note": note,
-    })
-    save_data()
-    for k in ("d_single", "d_first", "d_last", "d_note"):
-      st.session_state.pop(k, None)
-    rerun_with("✅ เพิ่มรายการลาสำเร็จ", open_for=emp_name)
+    existing_recs = records.get(emp_name, [])
+    is_overlap = any(
+        not (d_end < r["start"] or d_start > r["end"])
+        for r in existing_recs
+    )
+    if is_overlap:
+      st.error("⚠️ ช่วงวันที่เลือกซ้ำกับประวัติการลาที่มีอยู่แล้วในระบบ กรุณาตรวจสอบอีกครั้ง")
+    else:
+      records.setdefault(emp_name, []).append({
+          "start": d_start, "end": d_end, "category": category,
+          "days": days, "first": first, "last": last, "note": note,
+      })
+      save_data()
+      for k in ("d_single", "d_first", "d_last", "d_note"):
+        st.session_state.pop(k, None)
+      rerun_with("✅ เพิ่มรายการลาสำเร็จ", open_for=emp_name)
 
 
 # -------------------------------------------------------------------------
@@ -464,7 +482,15 @@ event = st.dataframe(
 if event.selection.rows:
   row = event.selection.rows[0]
   if row < len(df_display):
-    st.session_state.open_for = df_display.iloc[row]["ชื่อ - สกุล"]
+    # ค้นหาชื่อพนักงานจากแถวที่เลือก (กรณีตารางแยกหลายบรรทัด)
+    selected_name = None
+    for r_idx in range(row, -1, -1):
+      val = df_display.iloc[r_idx]["ชื่อ - สกุล"]
+      if val:
+        selected_name = val
+        break
+    if selected_name:
+      st.session_state.open_for = selected_name
   st.session_state.table_ver += 1
   st.rerun()
 
@@ -511,7 +537,7 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
         rerun_with("🗑️ ลบรายชื่อสำเร็จ")
 
 # -------------------------------------------------------------------------
-# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ (หัวตารางและชื่อผู้ตรวจสอบตรงต้นฉบับเป๊ะ)
+# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ
 # -------------------------------------------------------------------------
 def format_excel_date(d):
   short_months = [
@@ -541,12 +567,10 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
   f_bold = Font(name="TH SarabunPSK", size=14, bold=True)
   f_normal = Font(name="TH SarabunPSK", size=14)
 
-  # กำหนดความกว้างคอลัมน์ A ถึง I เหมือนต้นฉบับเป๊ะ
   col_widths = {"A": 6, "B": 28, "C": 42, "D": 16, "E": 16, "F": 10, "G": 10, "H": 10, "I": 28}
   for col, width in col_widths.items():
     ws.column_dimensions[col].width = width
 
-  # หัวเรื่อง 2 บรรทัด
   titles = [
       f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม",
       f"ประจำเดือน{month_str} {year_num}",
@@ -556,7 +580,6 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
     cell = ws[f"A{row}"]
     cell.value, cell.font, cell.alignment = text, f_title, center
 
-  # หัวตาราง 2 ชั้น (จัดตำแหน่ง ลาป่วย / ลากิจ ใต้ครั้งนี้ ให้ตรงต้นฉบับเป๊ะ)
   ws.merge_cells("A4:A5")
   ws["A4"] = "ที่"
   ws.merge_cells("B4:B5")
@@ -569,7 +592,7 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
   ws["E4"] = "ถึงวันที่"
 
   ws.merge_cells("F4:G4")
-  ws["F4"] = "ครั้งนี้\n(วัน)"
+  ws["F4"] = "ครั้งนี้"
   ws["F5"] = "ลาป่วย"
   ws["G5"] = "ลากิจ"
 
@@ -659,7 +682,6 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
           b_line = side if r_idx == emp_end_row else None
           cell.border = Border(left=side, right=side, top=t_line, bottom=b_line)
 
-  # ส่วนลงชื่อผู้ตรวจสอบ (ดึงชื่อ นายวงค์สกุล เข่งคุ้ม และตำแหน่งมาแสดงตามต้นฉบับเป๊ะ)
   sig_row = current_row + 2
   ws.merge_cells(f"F{sig_row}:I{sig_row}")
   cell = ws[f"F{sig_row}"]
