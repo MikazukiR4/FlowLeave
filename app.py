@@ -23,7 +23,6 @@ st.set_page_config(
 )
 st.title("📌 ระบบสรุปวันลาประจำเดือน (Template ราชการ)")
 
-# แสดงข้อความแจ้งผลที่ฝากไว้ก่อน rerun
 if msg := st.session_state.pop("flash", None):
   st.toast(msg)
 
@@ -58,7 +57,7 @@ COLUMNS = [
 FULL, AM, PM = "เต็มวัน", "ครึ่งวันเช้า", "ครึ่งวันบ่าย"
 
 # -------------------------------------------------------------------------
-# 2. ที่เก็บข้อมูล (Supabase > Persistent Disk > ไฟล์ในเครื่อง)
+# 2. ที่เก็บข้อมูล
 # -------------------------------------------------------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -72,13 +71,13 @@ elif DATA_DIR:
   STORAGE_LABEL = f"🟢 Persistent Disk ({SAVE_FILE})"
 else:
   STORAGE_LABEL = "🟡 ไฟล์ในเครื่องเซิร์ฟเวอร์"
-# Render ตั้งตัวแปร RENDER ให้อัตโนมัติ -> ถ้าไม่มีที่เก็บถาวร ข้อมูลจะหายเมื่อรีสตาร์ท
+
 EPHEMERAL = bool(os.getenv("RENDER")) and not (USE_SUPABASE or DATA_DIR)
 
 
 def _sb_headers():
   h = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
-  if not SUPABASE_KEY.startswith("sb_"):  # คีย์แบบเก่า (JWT)
+  if not SUPABASE_KEY.startswith("sb_"):
     h["Authorization"] = f"Bearer {SUPABASE_KEY}"
   return h
 
@@ -119,12 +118,11 @@ def write_raw(payload):
     tmp.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    tmp.replace(SAVE_FILE)  # เขียนแบบ atomic ไฟล์ไม่เสียถ้าค้างกลางทาง
+    tmp.replace(SAVE_FILE)
   read_raw.clear()
 
 
 def parse_payload(raw):
-  """แปลง JSON -> (employees, records) และใช้ตรวจความถูกต้องของไฟล์สำรอง"""
   employees = raw.get("master") or copy.deepcopy(SEED_EMPLOYEES)
   if not isinstance(employees, dict):
     raise ValueError("รูปแบบรายชื่อพนักงานไม่ถูกต้อง")
@@ -138,7 +136,7 @@ def parse_payload(raw):
           "end": date.fromisoformat(r["end"]),
           "category": r["category"],
           "days": float(r["days"]),
-          "first": r.get("first", FULL),  # รายการเก่า = เต็มวัน
+          "first": r.get("first", FULL),
           "last": r.get("last", FULL),
           "note": "" if note == "-" else note,
       })
@@ -167,14 +165,12 @@ def save_data():
 
 
 def rerun_with(msg, open_for=None):
-  """ฝากข้อความแจ้งผล (และชื่อที่ต้องเปิดป๊อปอัปซ้ำ) แล้ว rerun"""
-  st.session_state.setdefault("flash", msg)  # ไม่ทับข้อความ error จาก save_data
+  st.session_state.setdefault("flash", msg)
   if open_for:
     st.session_state.open_for = open_for
   st.rerun()
 
 
-# โหลดข้อมูล — ถ้าโหลดไม่ได้ให้หยุด ห้ามใช้ค่าตั้งต้นไปเขียนทับข้อมูลจริง
 try:
   employees, records = parse_payload(read_raw())
 except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as e:
@@ -195,14 +191,17 @@ def is_workday(d):
 
 
 def calc_leave_days(start, end, first=FULL, last=FULL):
-  """คืนค่า (วันลาสุทธิ, จำนวนวันทำการ) — หักครึ่งวันเฉพาะวันที่เป็นวันทำการ"""
   span = (start + timedelta(days=i) for i in range((end - start).days + 1))
   workdays = sum(1 for d in span if is_workday(d))
   days = float(workdays)
-  if first != FULL and is_workday(start):
-    days -= 0.5
-  if end != start and last != FULL and is_workday(end):
-    days -= 0.5
+  if start == end:
+    if first == AM or first == PM:
+      days -= 0.5
+  else:
+    if first != FULL and is_workday(start):
+      days -= 0.5
+    if last != FULL and is_workday(end):
+      days -= 0.5
   return days, workdays
 
 
@@ -213,7 +212,7 @@ def format_thai_date(d):
 def format_range(r):
   if r["start"] == r["end"]:
     return format_thai_date(r["start"])
-  return f"{format_thai_date(r['start'])} – {format_thai_date(r['end'])}"
+  return f"{format_thai_date(r['start'])} ถึง {format_thai_date(r['end'])}"
 
 
 def fmt_days(v):
@@ -221,23 +220,21 @@ def fmt_days(v):
 
 
 def describe(r):
-  """หมายเหตุอัตโนมัติจากลักษณะครึ่งวัน + หมายเหตุที่ผู้ใช้พิมพ์"""
   parts = []
   if r["start"] == r["end"]:
     if r["first"] != FULL:
       parts.append(r["first"])
   else:
     if r["first"] != FULL:
-      parts.append(f"วันที่ {r['start'].day} {r['first']}")
+      parts.append(f"วันแรก{r['first']}")
     if r["last"] != FULL:
-      parts.append(f"วันที่ {r['end'].day} {r['last']}")
+      parts.append(f"วันสุดท้าย{r['last']}")
   if r["note"]:
     parts.append(r["note"])
   return ", ".join(parts)
 
 
 def month_records(name):
-  """เฉพาะรายการลาในเดือนที่เลือก เรียงตามวันที่"""
   return sorted(
       (r for r in records.get(name, []) if month_start <= r["start"] <= month_end),
       key=lambda r: r["start"],
@@ -253,7 +250,7 @@ with st.sidebar:
   st.markdown(
       "1. **เลือกงวดเวลา:** กำหนดเดือนและปีที่ต้องการสรุปรายงาน\n"
       "2. **บันทึกวันลา:** แตะแถวชื่อพนักงานในตารางเพื่อเปิดหน้าต่างจัดการ\n"
-      "3. **ครึ่งวัน:** เลือก เต็มวัน / ครึ่งวันเช้า / ครึ่งวันบ่าย ระบบคำนวณให้ทันที\n"
+      "3. **ครึ่งวัน:** ถ้าระยะเวลามากกว่า 1 วัน ระบบให้เลือกช่วงเวลาวันแรก/วันสุดท้ายได้\n"
       "4. **ดาวน์โหลด:** ตรวจสอบตารางแล้วกดดาวน์โหลดไฟล์ Excel"
   )
 
@@ -285,7 +282,7 @@ with st.sidebar:
         payload = json.loads(up.getvalue().decode("utf-8"))
         if not isinstance(payload, dict) or "master" not in payload:
           raise ValueError("ไม่ใช่ไฟล์สำรองของระบบนี้")
-        parse_payload(payload)  # ตรวจความถูกต้องก่อนเขียนจริง
+        parse_payload(payload)
         write_raw(payload)
       except (ValueError, KeyError, TypeError, AttributeError,
               UnicodeDecodeError, requests.RequestException, OSError) as e:
@@ -386,21 +383,24 @@ def leave_dialog(emp_name):
     st.error("⚠️ วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น")
     return
 
-  # ข้อ 1 + 2: ปุ่มเลือกครึ่งวัน คำนวณใหม่ทันทีที่แตะ ไม่ต้องกด Enter
+  # ปรับการแสดงผล: ถ้าวันเดียวกัน เลือกครึ่งวันได้ / ถ้าข้ามวัน เลือกวันแรกกับวันสุดท้ายได้
   if d_start == d_end:
     first = st.radio("ลักษณะการลา", [FULL, AM, PM], horizontal=True, key="d_single")
     last = FULL
   else:
-    a, b = st.columns(2)
-    first = a.radio(
-        f"วันแรก ({format_thai_date(d_start)})", [FULL, PM],
-        horizontal=True, key="d_first",
-        help="เลือก 'ครึ่งวันบ่าย' ถ้าเริ่มลาตั้งแต่ช่วงบ่าย",
+    st.markdown("##### ⏱️ รายละเอียดช่วงเวลาที่ลา")
+    c1, c2 = st.columns(2)
+    first = c1.selectbox(
+        f"วันแรก ({format_thai_date(d_start)})",
+        [FULL, PM],
+        format_func=lambda x: "เต็มวัน (เริ่มเช้า)" if x == FULL else "ครึ่งวันบ่าย (เริ่มบ่าย)",
+        key="d_first",
     )
-    last = b.radio(
-        f"วันสุดท้าย ({format_thai_date(d_end)})", [FULL, AM],
-        horizontal=True, key="d_last",
-        help="เลือก 'ครึ่งวันเช้า' ถ้ากลับมาทำงานช่วงบ่าย",
+    last = c2.selectbox(
+        f"วันสุดท้าย ({format_thai_date(d_end)})",
+        [FULL, AM],
+        format_func=lambda x: "เต็มวัน (ลาถึงเย็น)" if x == FULL else "ครึ่งวันเช้า (กลับมาทำงานบ่าย)",
+        key="d_last",
     )
 
   note = st.text_input(
@@ -412,7 +412,6 @@ def leave_dialog(emp_name):
   days, workdays = calc_leave_days(d_start, d_end, first, last)
   span = (d_end - d_start).days + 1
 
-  # ข้อ 3: ช่วงที่ไม่มีวันทำการ = 0 วัน และห้ามบันทึก
   if workdays == 0:
     st.warning("⚠️ ช่วงวันที่เลือกเป็นวันเสาร์-อาทิตย์/วันหยุดราชการทั้งหมด จึงไม่มีวันลาที่ต้องบันทึก")
     return
@@ -431,7 +430,7 @@ def leave_dialog(emp_name):
     })
     save_data()
     for k in ("d_single", "d_first", "d_last", "d_note"):
-      st.session_state.pop(k, None)  # ล้างฟอร์มสำหรับรายการถัดไป
+      st.session_state.pop(k, None)
     rerun_with("✅ เพิ่มรายการลาสำเร็จ", open_for=emp_name)
 
 
@@ -445,8 +444,6 @@ df_display = build_summary_dataframe()
 if df_display.empty:
   st.info("📭 ยังไม่มีบุคลากรในกลุ่มนี้ — เพิ่มได้จากเมนูด้านล่าง")
 
-# ข้อ 6: เปลี่ยน key ของตารางทุกครั้งที่มีการเลือก เพื่อล้างการเลือกแถว
-# -> แตะแถวเดิมซ้ำได้ทันที และป๊อปอัปไม่เด้งเองตอนกดปุ่มอื่น
 st.session_state.setdefault("table_ver", 0)
 event = st.dataframe(
     df_display,
@@ -487,7 +484,6 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
           save_data()
           rerun_with("✅ เพิ่มรายชื่อสำเร็จ")
 
-  # ข้อ 4: ต้องติ๊กยืนยันก่อนลบ และแสดงจำนวนประวัติที่จะหายไป
   with del_col:
     names = [e["name"] for e in employees.get(employee_type, [])]
     if names:
