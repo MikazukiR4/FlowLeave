@@ -182,7 +182,6 @@ def rerun_with(msg, open_for=None):
   st.rerun()
 
 
-# ป้องกันหน้าขาว: หากไฟล์ JSON พัง ให้ fallback ใช้ข้อมูลตั้งต้นทันทีแทนที่จะ st.stop()
 try:
   employees, records = parse_payload(read_raw())
 except Exception:
@@ -237,9 +236,9 @@ def describe(r):
       parts.append(r["first"])
   else:
     if r["first"] != FULL:
-      parts.append(f"วันแรก{r['first']}")
+      parts.append(r["first"])
     if r["last"] != FULL:
-      parts.append(f"วันสุดท้าย{r['last']}")
+      parts.append(r["last"])
   if r["note"]:
     parts.append(r["note"])
   return ", ".join(parts)
@@ -326,7 +325,7 @@ st.info(
 
 
 # -------------------------------------------------------------------------
-# 6. ตารางสรุป
+# 6. ตารางสรุปบน UI
 # -------------------------------------------------------------------------
 def build_summary_dataframe():
   rows = []
@@ -512,7 +511,7 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
         rerun_with("🗑️ ลบรายชื่อสำเร็จ")
 
 # -------------------------------------------------------------------------
-# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ (แบบ Merge แถวพนักงานและจัดหน้า A4)
+# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ (หัวตารางและชื่อผู้ตรวจสอบตรงต้นฉบับเป๊ะ)
 # -------------------------------------------------------------------------
 def format_excel_date(d):
   short_months = [
@@ -542,9 +541,12 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
   f_bold = Font(name="TH SarabunPSK", size=14, bold=True)
   f_normal = Font(name="TH SarabunPSK", size=14)
 
-  for col, width in zip("ABCDEFGHI", [6, 26, 38, 14, 14, 10, 10, 10, 32]):
+  # กำหนดความกว้างคอลัมน์ A ถึง I เหมือนต้นฉบับเป๊ะ
+  col_widths = {"A": 6, "B": 28, "C": 42, "D": 16, "E": 16, "F": 10, "G": 10, "H": 10, "I": 28}
+  for col, width in col_widths.items():
     ws.column_dimensions[col].width = width
 
+  # หัวเรื่อง 2 บรรทัด
   titles = [
       f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม",
       f"ประจำเดือน{month_str} {year_num}",
@@ -554,15 +556,27 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
     cell = ws[f"A{row}"]
     cell.value, cell.font, cell.alignment = text, f_title, center
 
-  header_cols = zip(
-      "ABCDEHI",
-      ["ที่", "ชื่อ - สกุล", "ตำแหน่ง", "ตั้งแต่วันที่", "ถึงวันที่", "รวม\n(วัน)", "หมายเหตุ"],
-  )
-  for col, text in header_cols:
-    ws.merge_cells(f"{col}4:{col}5")
-    ws[f"{col}4"] = text
+  # หัวตาราง 2 ชั้น (จัดตำแหน่ง ลาป่วย / ลากิจ ใต้ครั้งนี้ ให้ตรงต้นฉบับเป๊ะ)
+  ws.merge_cells("A4:A5")
+  ws["A4"] = "ที่"
+  ws.merge_cells("B4:B5")
+  ws["B4"] = "ชื่อ - สกุล"
+  ws.merge_cells("C4:C5")
+  ws["C4"] = "ตำแหน่ง"
+  ws.merge_cells("D4:D5")
+  ws["D4"] = "ตั้งแต่วันที่"
+  ws.merge_cells("E4:E5")
+  ws["E4"] = "ถึงวันที่"
+
   ws.merge_cells("F4:G4")
-  ws["F4"], ws["F5"], ws["G5"] = "ครั้งนี้", "ลาป่วย", "ลากิจ"
+  ws["F4"] = "ครั้งนี้\n(วัน)"
+  ws["F5"] = "ลาป่วย"
+  ws["G5"] = "ลากิจ"
+
+  ws.merge_cells("H4:H5")
+  ws["H4"] = "รวม\n(วัน)"
+  ws.merge_cells("I4:I5")
+  ws["I4"] = "หมายเหตุ"
 
   for row in ws.iter_rows(min_row=4, max_row=5, max_col=9):
     for cell in row:
@@ -645,11 +659,24 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
           b_line = side if r_idx == emp_end_row else None
           cell.border = Border(left=side, right=side, top=t_line, bottom=b_line)
 
-  sig = current_row + 2
-  ws.merge_cells(f"F{sig}:I{sig}")
-  cell = ws[f"F{sig}"]
+  # ส่วนลงชื่อผู้ตรวจสอบ (ดึงชื่อ นายวงค์สกุล เข่งคุ้ม และตำแหน่งมาแสดงตามต้นฉบับเป๊ะ)
+  sig_row = current_row + 2
+  ws.merge_cells(f"F{sig_row}:I{sig_row}")
+  cell = ws[f"F{sig_row}"]
   cell.value = "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
   cell.font, cell.alignment = f_normal, center
+
+  name_row = sig_row + 2
+  ws.merge_cells(f"F{name_row}:I{name_row}")
+  cell_name = ws[f"F{name_row}"]
+  cell_name.value = "(นายวงค์สกุล เข่งคุ้ม)"
+  cell_name.font, cell_name.alignment = f_normal, center
+
+  pos_row = name_row + 1
+  ws.merge_cells(f"F{pos_row}:I{pos_row}")
+  cell_pos = ws[f"F{pos_row}"]
+  cell_pos.value = "ตำแหน่ง นักทรัพยากรบุคคลปฏิบัติการ"
+  cell_pos.font, cell_pos.alignment = f_normal, center
 
   buf = io.BytesIO()
   wb.save(buf)
