@@ -1,11 +1,14 @@
 import calendar
+import copy
 import io
 import json
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import openpyxl
 import pandas as pd
+import requests
 import streamlit as st
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.styles.fonts import DEFAULT_FONT
@@ -52,43 +55,98 @@ COLUMNS = [
     "ที่", "ชื่อ - สกุล", "ตำแหน่ง", "ตั้งแต่วันที่", "ถึงวันที่",
     "ลาป่วย", "ลากิจ", "รวม (วัน)", "หมายเหตุ",
 ]
-SAVE_FILE = Path(__file__).resolve().parent / "flowleave_data.json"
-
+FULL, AM, PM = "เต็มวัน", "ครึ่งวันเช้า", "ครึ่งวันบ่าย"
 
 # -------------------------------------------------------------------------
-# 2. ฟังก์ชันช่วย
+# 2. ที่เก็บข้อมูล (Supabase > Persistent Disk > ไฟล์ในเครื่อง)
 # -------------------------------------------------------------------------
-def format_thai_date(d):
-  return f"{d.day} {THAI_MONTHS[d.month - 1]} {d.year + 543}"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
+DATA_DIR = os.getenv("DATA_DIR")
+SAVE_FILE = Path(DATA_DIR or Path(__file__).resolve().parent) / "flowleave_data.json"
+
+if USE_SUPABASE:
+  STORAGE_LABEL = "🟢 Supabase (ข้อมูลถาวร)"
+elif DATA_DIR:
+  STORAGE_LABEL = f"🟢 Persistent Disk ({SAVE_FILE})"
+else:
+  STORAGE_LABEL = "🟡 ไฟล์ในเครื่องเซิร์ฟเวอร์"
+# Render ตั้งตัวแปร RENDER ให้อัตโนมัติ -> ถ้าไม่มีที่เก็บถาวร ข้อมูลจะหายเมื่อรีสตาร์ท
+EPHEMERAL = bool(os.getenv("RENDER")) and not (USE_SUPABASE or DATA_DIR)
 
 
-def fmt_days(v):
-  return f"{v:g}" if v else "-"  # 1.0 -> "1", 4.5 -> "4.5", 0 -> "-"
+def _sb_headers():
+  h = {"apikey": SUPABASE_KEY, "Content-Type": "application/json"}
+  if not SUPABASE_KEY.startswith("sb_"):  # คีย์แบบเก่า (JWT)
+    h["Authorization"] = f"Bearer {SUPABASE_KEY}"
+  return h
 
 
-def load_data():
-  """ไฟล์ JSON คือแหล่งข้อมูลหลักเพียงแหล่งเดียว"""
-  try:
-    raw = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
-    records = {
-        name: [
-            {
-                "note": "-",
-                **r,
-                "start": date.fromisoformat(r["start"]),
-                "end": date.fromisoformat(r["end"]),
-            }
-            for r in recs
-        ]
-        for name, recs in raw.get("records", {}).items()
-    }
-    return raw.get("master") or SEED_EMPLOYEES, records
-  except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
-    return SEED_EMPLOYEES, {}
+@st.cache_data(ttl=15, show_spinner=False)
+def read_raw():
+  if USE_SUPABASE:
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/app_state",
+        params={"id": "eq.1", "select": "data"},
+        headers=_sb_headers(),
+        timeout=10,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0]["data"] if rows else {}
+  if not SAVE_FILE.exists():
+    return {}
+  return json.loads(SAVE_FILE.read_text(encoding="utf-8"))
 
 
-def save_data():
-  payload = {
+def write_raw(payload):
+  if USE_SUPABASE:
+    resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/app_state",
+        json={
+            "id": 1,
+            "data": payload,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+  else:
+    SAVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SAVE_FILE.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    tmp.replace(SAVE_FILE)  # เขียนแบบ atomic ไฟล์ไม่เสียถ้าค้างกลางทาง
+  read_raw.clear()
+
+
+def parse_payload(raw):
+  """แปลง JSON -> (employees, records) และใช้ตรวจความถูกต้องของไฟล์สำรอง"""
+  employees = raw.get("master") or copy.deepcopy(SEED_EMPLOYEES)
+  if not isinstance(employees, dict):
+    raise ValueError("รูปแบบรายชื่อพนักงานไม่ถูกต้อง")
+  records = {}
+  for name, recs in raw.get("records", {}).items():
+    records[name] = []
+    for r in recs:
+      note = str(r.get("note") or "").strip()
+      records[name].append({
+          "start": date.fromisoformat(r["start"]),
+          "end": date.fromisoformat(r["end"]),
+          "category": r["category"],
+          "days": float(r["days"]),
+          "first": r.get("first", FULL),  # รายการเก่า = เต็มวัน
+          "last": r.get("last", FULL),
+          "note": "" if note == "-" else note,
+      })
+  return employees, records
+
+
+def build_payload():
+  return {
       "master": employees,
       "records": {
           name: [
@@ -99,55 +157,154 @@ def save_data():
           if recs
       },
   }
+
+
+def save_data():
   try:
-    SAVE_FILE.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-  except OSError:
-    st.session_state.flash = "⚠️ บันทึกไฟล์ข้อมูลไม่ได้ — ตรวจสอบสิทธิ์การเขียนโฟลเดอร์"
+    write_raw(build_payload())
+  except (requests.RequestException, OSError) as e:
+    st.session_state.flash = f"⚠️ บันทึกไม่สำเร็จ: {e}"
 
 
-def rerun_with(msg, reopen=None):
+def rerun_with(msg, open_for=None):
   """ฝากข้อความแจ้งผล (และชื่อที่ต้องเปิดป๊อปอัปซ้ำ) แล้ว rerun"""
   st.session_state.setdefault("flash", msg)  # ไม่ทับข้อความ error จาก save_data
-  st.session_state.reopen = reopen
+  if open_for:
+    st.session_state.open_for = open_for
   st.rerun()
 
 
-def calc_leave_days(start, end, note):
-  """นับวันทำการ (หักเสาร์-อาทิตย์และวันหยุดราชการ) และหัก 0.5 ถ้าระบุครึ่งวัน"""
-  th_holidays = holidays.TH(years=start.year) if holidays else set()
-  dates = (start + timedelta(days=i) for i in range((end - start).days + 1))
-  days = max(sum(1 for d in dates if d.weekday() < 5 and d not in th_holidays), 1)
-  if "ครึ่งวัน" in note or "0.5" in note:
+# โหลดข้อมูล — ถ้าโหลดไม่ได้ให้หยุด ห้ามใช้ค่าตั้งต้นไปเขียนทับข้อมูลจริง
+try:
+  employees, records = parse_payload(read_raw())
+except (requests.RequestException, OSError, ValueError, KeyError, TypeError) as e:
+  st.error(f"⚠️ โหลดข้อมูลไม่สำเร็จ — หยุดการทำงานเพื่อป้องกันข้อมูลถูกเขียนทับ\n\n{e}")
+  st.stop()
+
+
+# -------------------------------------------------------------------------
+# 3. ฟังก์ชันวันที่และการคำนวณ
+# -------------------------------------------------------------------------
+@st.cache_resource
+def th_holidays(year):
+  return holidays.TH(years=year) if holidays else {}
+
+
+def is_workday(d):
+  return d.weekday() < 5 and d not in th_holidays(d.year)
+
+
+def calc_leave_days(start, end, first=FULL, last=FULL):
+  """คืนค่า (วันลาสุทธิ, จำนวนวันทำการ) — หักครึ่งวันเฉพาะวันที่เป็นวันทำการ"""
+  span = (start + timedelta(days=i) for i in range((end - start).days + 1))
+  workdays = sum(1 for d in span if is_workday(d))
+  days = float(workdays)
+  if first != FULL and is_workday(start):
     days -= 0.5
-  return days
+  if end != start and last != FULL and is_workday(end):
+    days -= 0.5
+  return days, workdays
+
+
+def format_thai_date(d):
+  return f"{d.day} {THAI_MONTHS[d.month - 1]} {d.year + 543}"
+
+
+def format_range(r):
+  if r["start"] == r["end"]:
+    return format_thai_date(r["start"])
+  return f"{format_thai_date(r['start'])} – {format_thai_date(r['end'])}"
+
+
+def fmt_days(v):
+  return f"{v:g}" if v else "-"
+
+
+def describe(r):
+  """หมายเหตุอัตโนมัติจากลักษณะครึ่งวัน + หมายเหตุที่ผู้ใช้พิมพ์"""
+  parts = []
+  if r["start"] == r["end"]:
+    if r["first"] != FULL:
+      parts.append(r["first"])
+  else:
+    if r["first"] != FULL:
+      parts.append(f"วันที่ {r['start'].day} {r['first']}")
+    if r["last"] != FULL:
+      parts.append(f"วันที่ {r['end'].day} {r['last']}")
+  if r["note"]:
+    parts.append(r["note"])
+  return ", ".join(parts)
 
 
 def month_records(name):
-  """เฉพาะรายการลาที่อยู่ในเดือนที่เลือก"""
-  return [r for r in records.get(name, []) if month_start <= r["start"] <= month_end]
+  """เฉพาะรายการลาในเดือนที่เลือก เรียงตามวันที่"""
+  return sorted(
+      (r for r in records.get(name, []) if month_start <= r["start"] <= month_end),
+      key=lambda r: r["start"],
+  )
 
 
 # -------------------------------------------------------------------------
-# 3. โหลดข้อมูล + ส่วนหัว
+# 4. Sidebar: คำแนะนำ + สำรอง/กู้คืนข้อมูล
 # -------------------------------------------------------------------------
-employees, records = load_data()
-
+st.session_state.setdefault("restore_ver", 0)
 with st.sidebar:
   st.header("⚙️ คำแนะนำการใช้งาน")
   st.markdown(
       "1. **เลือกงวดเวลา:** กำหนดเดือนและปีที่ต้องการสรุปรายงาน\n"
       "2. **บันทึกวันลา:** แตะแถวชื่อพนักงานในตารางเพื่อเปิดหน้าต่างจัดการ\n"
-      "3. **ครึ่งวัน:** พิมพ์คำว่า 'ครึ่งวัน' ในหมายเหตุ ระบบหัก 0.5 วันให้\n"
+      "3. **ครึ่งวัน:** เลือก เต็มวัน / ครึ่งวันเช้า / ครึ่งวันบ่าย ระบบคำนวณให้ทันที\n"
       "4. **ดาวน์โหลด:** ตรวจสอบตารางแล้วกดดาวน์โหลดไฟล์ Excel"
   )
 
+  st.divider()
+  st.subheader("💾 สำรอง / กู้คืนข้อมูล")
+  st.caption(f"ที่เก็บข้อมูล: {STORAGE_LABEL}")
+  if EPHEMERAL:
+    st.error(
+        "ข้อมูลตอนนี้เก็บแบบชั่วคราว **จะหายเมื่อเซิร์ฟเวอร์รีสตาร์ท** "
+        "กรุณาตั้งค่า Supabase หรือกดสำรองข้อมูลเป็นประจำ"
+    )
+
+  st.download_button(
+      "⬇️ ดาวน์โหลดไฟล์สำรอง (.json)",
+      data=json.dumps(build_payload(), ensure_ascii=False, indent=2),
+      file_name=f"flowleave_backup_{date.today().isoformat()}.json",
+      mime="application/json",
+      use_container_width=True,
+  )
+
+  up = st.file_uploader(
+      "กู้คืนจากไฟล์สำรอง", type="json",
+      key=f"restore_{st.session_state.restore_ver}",
+  )
+  if up is not None:
+    st.warning("การกู้คืนจะ **แทนที่ข้อมูลปัจจุบันทั้งหมด**")
+    if st.button("♻️ ยืนยันกู้คืนข้อมูล", use_container_width=True):
+      try:
+        payload = json.loads(up.getvalue().decode("utf-8"))
+        if not isinstance(payload, dict) or "master" not in payload:
+          raise ValueError("ไม่ใช่ไฟล์สำรองของระบบนี้")
+        parse_payload(payload)  # ตรวจความถูกต้องก่อนเขียนจริง
+        write_raw(payload)
+      except (ValueError, KeyError, TypeError, AttributeError,
+              UnicodeDecodeError, requests.RequestException, OSError) as e:
+        st.error(f"กู้คืนไม่สำเร็จ: {e}")
+      else:
+        st.session_state.restore_ver += 1
+        rerun_with("✅ กู้คืนข้อมูลสำเร็จ")
+
+# -------------------------------------------------------------------------
+# 5. ส่วนหัว: งวดรายงาน
+# -------------------------------------------------------------------------
 today = date.today()
 st.markdown("### 🗓️ กำหนดงวดรายงานประจำเดือน")
 c1, c2, c3 = st.columns([2, 2, 3])
 selected_month = c1.selectbox("ประจำเดือน", THAI_MONTHS, index=today.month - 1)
-selected_year = int(c2.number_input("ปี พ.ศ.", value=today.year + 543, step=1))
+selected_year = int(c2.number_input(
+    "ปี พ.ศ.", value=today.year + 543, min_value=2560, max_value=2700,
+    step=1, format="%d",
+))
 employee_type = c3.selectbox("ประเภทพนักงาน", list(employees))
 
 month_num = THAI_MONTHS.index(selected_month) + 1
@@ -162,7 +319,7 @@ st.info(
 
 
 # -------------------------------------------------------------------------
-# 4. ตารางสรุป
+# 6. ตารางสรุป
 # -------------------------------------------------------------------------
 def build_summary_dataframe():
   rows = []
@@ -170,6 +327,12 @@ def build_summary_dataframe():
     recs = month_records(emp["name"])
     sick = sum(r["days"] for r in recs if r["category"] == "ลาป่วย")
     kit = sum(r["days"] for r in recs if r["category"] == "ลากิจ")
+    lines = []
+    for r in recs:
+      desc = describe(r)
+      lines.append(
+          f"{r['category']} {r['days']:g} วัน" + (f" ({desc})" if desc else "")
+      )
     rows.append({
         "ที่": idx,
         "ชื่อ - สกุล": emp["name"],
@@ -179,18 +342,16 @@ def build_summary_dataframe():
         "ลาป่วย": fmt_days(sick),
         "ลากิจ": fmt_days(kit),
         "รวม (วัน)": fmt_days(sick + kit),
-        "หมายเหตุ": "\n".join(
-            f"{r['note'] or '-'} ({r['days']:g} วัน)" for r in recs
-        ) or "-",
+        "หมายเหตุ": "\n".join(lines) or "-",
     })
   return pd.DataFrame(rows, columns=COLUMNS)
 
 
 # -------------------------------------------------------------------------
-# 5. ป๊อปอัปจัดการวันลา
+# 7. ป๊อปอัปจัดการวันลา
 # -------------------------------------------------------------------------
 @st.dialog("📅 จัดการประวัติการลาบุคลากร", width="large")
-def open_leave_dialog(emp_name):
+def leave_dialog(emp_name):
   st.markdown(f"### 👤 {emp_name}")
   st.markdown(f"#### 📋 รายการลาเดือน{selected_month} {selected_year}")
 
@@ -198,53 +359,84 @@ def open_leave_dialog(emp_name):
   if not recs:
     st.info("ยังไม่มีประวัติการลาในเดือนนี้")
   for i, rec in enumerate(recs):
-    a, b, c = st.columns([3, 6, 1])
-    a.markdown(f"**{rec['category']}** ({rec['days']:g} วัน)")
-    b.text(
-        f"{format_thai_date(rec['start'])} ถึง "
-        f"{format_thai_date(rec['end'])} [{rec['note']}]"
-    )
-    if c.button("🗑️", key=f"del_{emp_name}_{i}", help="ลบรายการนี้"):
+    a, b = st.columns([9, 1], vertical_alignment="center")
+    a.markdown(f"**{rec['category']} {rec['days']:g} วัน** · {format_range(rec)}")
+    if desc := describe(rec):
+      a.caption(desc)
+    if b.button("🗑️", key=f"del_{emp_name}_{i}", help="ลบรายการนี้"):
       records[emp_name].remove(rec)
       save_data()
-      rerun_with("ลบรายการสำเร็จ", reopen=emp_name)
+      rerun_with("🗑️ ลบรายการสำเร็จ", open_for=emp_name)
 
   st.divider()
   st.markdown("#### ➕ เพิ่มรายการลาใหม่")
-  category = st.selectbox("ประเภทการลา", ["ลาป่วย", "ลากิจ"], key="d_cat")
+  category = st.radio("ประเภทการลา", ["ลาป่วย", "ลากิจ"], horizontal=True, key="d_cat")
+
   a, b = st.columns(2)
   d_start = a.date_input(
-      "ตั้งแต่วันที่", value=month_start,
-      min_value=month_start, max_value=month_end, key="d_start",
+      "ตั้งแต่วันที่", value=month_start, min_value=month_start,
+      max_value=month_end, format="DD/MM/YYYY", key="d_start",
   )
   d_end = b.date_input(
-      "ถึงวันที่", value=month_start,
-      min_value=month_start, max_value=month_end, key="d_end",
+      "ถึงวันที่", value=month_start, min_value=month_start,
+      max_value=month_end, format="DD/MM/YYYY", key="d_end",
   )
-  note = st.text_input(
-      "หมายเหตุ / ลักษณะการลา", value="-",
-      placeholder="เช่น ลาครึ่งวันเช้า, วันแรกเต็ม วันที่สองครึ่งวันบ่าย",
-      key="d_note",
-  ).strip() or "-"
 
   if d_end < d_start:
     st.error("⚠️ วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น")
     return
 
-  days = calc_leave_days(d_start, d_end, note)
-  st.info(f"📌 **จำนวนวันที่คำนวณได้:** `{days:g} วัน`")
+  # ข้อ 1 + 2: ปุ่มเลือกครึ่งวัน คำนวณใหม่ทันทีที่แตะ ไม่ต้องกด Enter
+  if d_start == d_end:
+    first = st.radio("ลักษณะการลา", [FULL, AM, PM], horizontal=True, key="d_single")
+    last = FULL
+  else:
+    a, b = st.columns(2)
+    first = a.radio(
+        f"วันแรก ({format_thai_date(d_start)})", [FULL, PM],
+        horizontal=True, key="d_first",
+        help="เลือก 'ครึ่งวันบ่าย' ถ้าเริ่มลาตั้งแต่ช่วงบ่าย",
+    )
+    last = b.radio(
+        f"วันสุดท้าย ({format_thai_date(d_end)})", [FULL, AM],
+        horizontal=True, key="d_last",
+        help="เลือก 'ครึ่งวันเช้า' ถ้ากลับมาทำงานช่วงบ่าย",
+    )
+
+  note = st.text_input(
+      "หมายเหตุเพิ่มเติม (ไม่บังคับ)",
+      placeholder="เช่น ไปพบแพทย์, ธุระส่วนตัว",
+      key="d_note",
+  ).strip()
+
+  days, workdays = calc_leave_days(d_start, d_end, first, last)
+  span = (d_end - d_start).days + 1
+
+  # ข้อ 3: ช่วงที่ไม่มีวันทำการ = 0 วัน และห้ามบันทึก
+  if workdays == 0:
+    st.warning("⚠️ ช่วงวันที่เลือกเป็นวันเสาร์-อาทิตย์/วันหยุดราชการทั้งหมด จึงไม่มีวันลาที่ต้องบันทึก")
+    return
+
+  detail = [f"ช่วงที่เลือก {span} วัน"]
+  if span - workdays:
+    detail.append(f"หักวันหยุด {span - workdays} วัน")
+  if workdays - days:
+    detail.append(f"หักครึ่งวัน {workdays - days:g} วัน")
+  st.info(f"📌 **รวม {days:g} วัน**  \n{' · '.join(detail)}")
 
   if st.button("➕ บันทึกเพิ่มรายการนี้", type="primary", use_container_width=True):
     records.setdefault(emp_name, []).append({
-        "start": d_start, "end": d_end,
-        "category": category, "days": days, "note": note,
+        "start": d_start, "end": d_end, "category": category,
+        "days": days, "first": first, "last": last, "note": note,
     })
     save_data()
-    rerun_with("เพิ่มรายการลาสำเร็จ", reopen=emp_name)
+    for k in ("d_single", "d_first", "d_last", "d_note"):
+      st.session_state.pop(k, None)  # ล้างฟอร์มสำหรับรายการถัดไป
+    rerun_with("✅ เพิ่มรายการลาสำเร็จ", open_for=emp_name)
 
 
 # -------------------------------------------------------------------------
-# 6. แสดงตาราง + เปิดป๊อปอัปเฉพาะเมื่อเลือกแถวใหม่
+# 8. แสดงตาราง + เปิดป๊อปอัป
 # -------------------------------------------------------------------------
 st.subheader("📊 ตารางสรุปข้อมูลบุคลากรและวันลาประจำเดือน")
 st.markdown("👉 **แตะแถวพนักงานในตาราง เพื่อเปิดหน้าต่างจัดการประวัติการลา**")
@@ -253,29 +445,29 @@ df_display = build_summary_dataframe()
 if df_display.empty:
   st.info("📭 ยังไม่มีบุคลากรในกลุ่มนี้ — เพิ่มได้จากเมนูด้านล่าง")
 
+# ข้อ 6: เปลี่ยน key ของตารางทุกครั้งที่มีการเลือก เพื่อล้างการเลือกแถว
+# -> แตะแถวเดิมซ้ำได้ทันที และป๊อปอัปไม่เด้งเองตอนกดปุ่มอื่น
+st.session_state.setdefault("table_ver", 0)
 event = st.dataframe(
     df_display,
     use_container_width=True,
     hide_index=True,
     selection_mode="single-row",
     on_select="rerun",
-    key="employee_table",
+    key=f"employee_table_{st.session_state.table_ver}",
 )
+if event.selection.rows:
+  row = event.selection.rows[0]
+  if row < len(df_display):
+    st.session_state.open_for = df_display.iloc[row]["ชื่อ - สกุล"]
+  st.session_state.table_ver += 1
+  st.rerun()
 
-sel = event.selection.rows
-picked = (
-    df_display.iloc[sel[0]]["ชื่อ - สกุล"]
-    if sel and sel[0] < len(df_display) else None
-)
-target = st.session_state.pop("reopen", None) or (
-    picked if picked != st.session_state.get("last_picked") else None
-)
-st.session_state.last_picked = picked
-if target:
-  open_leave_dialog(target)
+if name := st.session_state.pop("open_for", None):
+  leave_dialog(name)
 
 # -------------------------------------------------------------------------
-# 7. เพิ่ม / ลบรายชื่อพนักงาน
+# 9. เพิ่ม / ลบรายชื่อพนักงาน
 # -------------------------------------------------------------------------
 with st.expander("➕ เพิ่มรายชื่อพนักงานใหม่ / 🗑️ ลบรายชื่อพนักงาน"):
   add_col, del_col = st.columns(2)
@@ -293,23 +485,29 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
               {"name": new_n, "position": new_p or "-"}
           )
           save_data()
-          rerun_with("เพิ่มรายชื่อสำเร็จ")
+          rerun_with("✅ เพิ่มรายชื่อสำเร็จ")
 
-  names = [e["name"] for e in employees.get(employee_type, [])]
-  if names:
-    with del_col:
-      with st.form("del_form"):
-        del_n = st.selectbox("เลือกรายชื่อที่ต้องการลบออก", names)
-        if st.form_submit_button("🗑️ ลบพนักงานออก"):
-          employees[employee_type] = [
-              e for e in employees[employee_type] if e["name"] != del_n
-          ]
-          records.pop(del_n, None)
-          save_data()
-          rerun_with("ลบรายชื่อสำเร็จ")
+  # ข้อ 4: ต้องติ๊กยืนยันก่อนลบ และแสดงจำนวนประวัติที่จะหายไป
+  with del_col:
+    names = [e["name"] for e in employees.get(employee_type, [])]
+    if names:
+      del_n = st.selectbox("เลือกรายชื่อที่ต้องการลบ", names, key="del_select")
+      n_recs = len(records.get(del_n, []))
+      st.warning(
+          f"จะลบ **{del_n}** ออกจากระบบ"
+          + (f" พร้อมประวัติการลา **{n_recs} รายการ** (ทุกเดือน)" if n_recs else "")
+      )
+      confirm = st.checkbox("ยืนยันการลบ (ย้อนกลับไม่ได้)", key=f"confirm_{del_n}")
+      if st.button("🗑️ ลบพนักงานออก", disabled=not confirm):
+        employees[employee_type] = [
+            e for e in employees[employee_type] if e["name"] != del_n
+        ]
+        records.pop(del_n, None)
+        save_data()
+        rerun_with("🗑️ ลบรายชื่อสำเร็จ")
 
 # -------------------------------------------------------------------------
-# 8. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ
+# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ
 # -------------------------------------------------------------------------
 DEFAULT_FONT.name = "TH SarabunPSK"
 DEFAULT_FONT.size = 14
@@ -328,10 +526,9 @@ def generate_excel(df, month, year, emp_type):
   f_bold = Font(name="TH SarabunPSK", size=14, bold=True)
   f_normal = Font(name="TH SarabunPSK", size=14)
 
-  for col, width in zip("ABCDEFGHI", [6, 28, 42, 20, 20, 12, 12, 12, 28]):
+  for col, width in zip("ABCDEFGHI", [6, 28, 42, 20, 20, 12, 12, 12, 36]):
     ws.column_dimensions[col].width = width
 
-  # หัวเรื่อง 2 บรรทัด
   titles = [
       f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม",
       f"ประจำเดือน{month} {year}",
@@ -341,7 +538,6 @@ def generate_excel(df, month, year, emp_type):
     cell = ws[f"A{row}"]
     cell.value, cell.font, cell.alignment = text, f_title, center
 
-  # หัวตาราง 2 ชั้น
   header_cols = zip(
       "ABCDEHI",
       ["ที่", "ชื่อ - สกุล", "ตำแหน่ง", "ตั้งแต่วันที่", "ถึงวันที่", "รวม\n(วัน)", "หมายเหตุ"],
@@ -356,14 +552,12 @@ def generate_excel(df, month, year, emp_type):
     for cell in row:
       cell.font, cell.alignment, cell.border = f_bold, center, border
 
-  # ข้อมูล (ลำดับคอลัมน์ของ df ตรงกับ A–I)
   for r, values in enumerate(df.itertuples(index=False), start=6):
     for c, value in enumerate(values, start=1):
       cell = ws.cell(row=r, column=c, value=value)
       cell.font, cell.border = f_normal, border
       cell.alignment = left if c in (2, 3, 9) else center
 
-  # ช่องลงชื่อ
   sig = ws.max_row + 3
   ws.merge_cells(f"F{sig}:I{sig}")
   cell = ws[f"F{sig}"]
