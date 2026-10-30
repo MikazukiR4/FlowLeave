@@ -325,7 +325,7 @@ st.info(
 
 
 # -------------------------------------------------------------------------
-# 6. ตารางสรุปบน UI (แยกบรรทัดตามแต่ละ Range การลา)
+# 6. ตารางสรุปบน UI
 # -------------------------------------------------------------------------
 def build_summary_dataframe():
   rows = []
@@ -482,7 +482,6 @@ event = st.dataframe(
 if event.selection.rows:
   row = event.selection.rows[0]
   if row < len(df_display):
-    # ค้นหาชื่อพนักงานจากแถวที่เลือก (กรณีตารางแยกหลายบรรทัด)
     selected_name = None
     for r_idx in range(row, -1, -1):
       val = df_display.iloc[r_idx]["ชื่อ - สกุล"]
@@ -536,8 +535,9 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
         save_data()
         rerun_with("🗑️ ลบรายชื่อสำเร็จ")
 
+
 # -------------------------------------------------------------------------
-# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ
+# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ (เหมือนภาพต้นฉบับเป๊ะ 100%)
 # -------------------------------------------------------------------------
 def format_excel_date(d):
   short_months = [
@@ -580,6 +580,7 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
     cell = ws[f"A{row}"]
     cell.value, cell.font, cell.alignment = text, f_title, center
 
+  # หัวตาราง: จัด F4:G4 เป็น "ครั้งนี้" แล้วแบ่ง F5=ลาป่วย, G5=ลากิจ
   ws.merge_cells("A4:A5")
   ws["A4"] = "ที่"
   ws.merge_cells("B4:B5")
@@ -620,8 +621,12 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
       ws.cell(row=current_row, column=1, value=idx)
       ws.cell(row=current_row, column=2, value=name)
       ws.cell(row=current_row, column=3, value=position)
-      for c in range(4, 10):
-        ws.cell(row=current_row, column=c, value="-")
+      ws.cell(row=current_row, column=4, value="-")
+      ws.cell(row=current_row, column=5, value="-")
+      ws.cell(row=current_row, column=6, value="-")
+      ws.cell(row=current_row, column=7, value="-")
+      ws.cell(row=current_row, column=8, value="-")
+      ws.cell(row=current_row, column=9, value="-")
       
       for c in range(1, 10):
         cell = ws.cell(row=current_row, column=c)
@@ -682,11 +687,17 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
           b_line = side if r_idx == emp_end_row else None
           cell.border = Border(left=side, right=side, top=t_line, bottom=b_line)
 
+  # ส่วนลงชื่อผู้ตรวจสอบ (จัดบรรทัดให้อยู่ในแถวเดียวกันพอดีเป๊ะตามต้นฉบับ)
   sig_row = current_row + 2
-  ws.merge_cells(f"F{sig_row}:I{sig_row}")
-  cell = ws[f"F{sig_row}"]
-  cell.value = "(ลงชื่อ)....................................................ผู้ตรวจสอบ"
-  cell.font, cell.alignment = f_normal, center
+  ws.merge_cells(f"E{sig_row}:G{sig_row}")
+  ws[f"E{sig_row}"] = "(ลงชื่อ)...................................................."
+  ws[f"E{sig_row}"].font = f_normal
+  ws[f"E{sig_row}"].alignment = Alignment(horizontal="right", vertical="center")
+
+  ws.merge_cells(f"H{sig_row}:I{sig_row}")
+  ws[f"H{sig_row}"] = "ผู้ตรวจสอบ"
+  ws[f"H{sig_row}"].font = f_normal
+  ws[f"H{sig_row}"].alignment = Alignment(horizontal="left", vertical="center")
 
   name_row = sig_row + 2
   ws.merge_cells(f"F{name_row}:I{name_row}")
