@@ -31,7 +31,7 @@ if msg := st.session_state.pop("flash", None):
   st.toast(msg)
 
 # -------------------------------------------------------------------------
-# 1. ค่าคงที่
+# 1. ค่าคงที่ (ลบรายชื่อออกอย่างถาวร)
 # -------------------------------------------------------------------------
 SEED_EMPLOYEES = {
     "พนักงานจ้างเหมาเอกชน": [
@@ -41,7 +41,6 @@ SEED_EMPLOYEES = {
         {"name": "นางสาวยัสมี  ดาโอะ", "position": "พนักงานจ้างปฏิบัติงานธุรการ"},
         {"name": "นางสาวภาวินีย์  ตันสกุล", "position": "พนักงานจ้างทำความสะอาด"},
         {"name": "นายภานุวัฒน์  จันทร์ชีวา", "position": "พนักงานจ้างปฏิบัติงานขับรถยนต์"},
-        {"name": "นางสาวหัทยาภักดิ์ แสงแก้ว", "position": "พนักงานจ้างปฏิบัติงานการเงินและบัญชี"},
         {"name": "นายหนึ่ง  สุนทรรัตน์", "position": "พนักงานจ้างปฏิบัติงานรักษาความปลอดภัย"},
     ],
     "พนักงานราชการ": [
@@ -133,8 +132,16 @@ def parse_payload(raw):
   if not raw or not isinstance(raw, dict):
     return copy.deepcopy(SEED_EMPLOYEES), {}
   employees = raw.get("master") or copy.deepcopy(SEED_EMPLOYEES)
+  
+  for cat in SEED_EMPLOYEES:
+    if cat in employees:
+      default_names = {e["name"] for e in SEED_EMPLOYEES[cat]}
+      employees[cat] = [e for e in employees[cat] if e["name"] in default_names]
+
   records = {}
   for name, recs in raw.get("records", {}).items():
+    if not any(name == e["name"] for group in SEED_EMPLOYEES.values() for e in group):
+      continue
     records[name] = []
     if isinstance(recs, list):
       for r in recs:
@@ -155,6 +162,7 @@ def parse_payload(raw):
 
 
 def build_payload():
+  valid_names = {e["name"] for group in SEED_EMPLOYEES.values() for e in group}
   return {
       "master": employees,
       "records": {
@@ -163,7 +171,7 @@ def build_payload():
               for r in recs
           ]
           for name, recs in records.items()
-          if recs
+          if recs and name in valid_names
       },
   }
 
@@ -329,7 +337,8 @@ st.info(
 # -------------------------------------------------------------------------
 def build_summary_dataframe():
   rows = []
-  for idx, emp in enumerate(employees.get(employee_type, []), 1):
+  emp_list = employees.get(employee_type, [])
+  for idx, emp in enumerate(emp_list, 1):
     recs = month_records(emp["name"])
     if not recs:
       rows.append({
@@ -537,7 +546,7 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
 
 
 # -------------------------------------------------------------------------
-# 10. สร้างไฟล์ Excel ตามแบบฟอร์มราชการ (เหมือนภาพต้นฉบับเป๊ะ 100%)
+# 10. สร้างไฟล์ Excel โดยโหลดโครงสร้างจาก template.xlsx มาเติมข้อมูล
 # -------------------------------------------------------------------------
 def format_excel_date(d):
   short_months = [
@@ -548,63 +557,24 @@ def format_excel_date(d):
 
 
 def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
-  wb = openpyxl.Workbook()
-  ws = wb.active
-  ws.title = "สรุปวันลา"
+  template_path = Path(__file__).resolve().parent / "template.xlsx"
+  
+  if template_path.exists():
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+  else:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "สรุปวันลา"
 
-  ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
-  ws.page_setup.paperSize = ws.PAPERSIZE_A4
-  ws.sheet_properties.pageSetUpPr.fitToPage = True
-  ws.page_setup.fitToWidth = 1
-  ws.page_setup.fitToHeight = 0
+  ws["A1"] = f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม"
+  ws["A2"] = f"ประจำเดือน{month_str} {year_num}"
 
   side = Side(style="thin", color="000000")
   border = Border(left=side, right=side, top=side, bottom=side)
   center = Alignment(horizontal="center", vertical="center", wrap_text=True)
   left = Alignment(horizontal="left", vertical="center", wrap_text=True)
-  
-  f_title = Font(name="TH SarabunPSK", size=16, bold=True)
-  f_bold = Font(name="TH SarabunPSK", size=14, bold=True)
   f_normal = Font(name="TH SarabunPSK", size=14)
-
-  col_widths = {"A": 6, "B": 28, "C": 42, "D": 16, "E": 16, "F": 10, "G": 10, "H": 10, "I": 28}
-  for col, width in col_widths.items():
-    ws.column_dimensions[col].width = width
-
-  titles = [
-      f"ตารางสรุปวันลา {emp_type} สำนักงานศึกษาธิการจังหวัดสมุทรสงคราม",
-      f"ประจำเดือน{month_str} {year_num}",
-  ]
-  for row, text in enumerate(titles, start=1):
-    ws.merge_cells(f"A{row}:I{row}")
-    cell = ws[f"A{row}"]
-    cell.value, cell.font, cell.alignment = text, f_title, center
-
-  # หัวตาราง: จัด F4:G4 เป็น "ครั้งนี้" แล้วแบ่ง F5=ลาป่วย, G5=ลากิจ
-  ws.merge_cells("A4:A5")
-  ws["A4"] = "ที่"
-  ws.merge_cells("B4:B5")
-  ws["B4"] = "ชื่อ - สกุล"
-  ws.merge_cells("C4:C5")
-  ws["C4"] = "ตำแหน่ง"
-  ws.merge_cells("D4:D5")
-  ws["D4"] = "ตั้งแต่วันที่"
-  ws.merge_cells("E4:E5")
-  ws["E4"] = "ถึงวันที่"
-
-  ws.merge_cells("F4:G4")
-  ws["F4"] = "ครั้งนี้"
-  ws["F5"] = "ลาป่วย"
-  ws["G5"] = "ลากิจ"
-
-  ws.merge_cells("H4:H5")
-  ws["H4"] = "รวม\n(วัน)"
-  ws.merge_cells("I4:I5")
-  ws["I4"] = "หมายเหตุ"
-
-  for row in ws.iter_rows(min_row=4, max_row=5, max_col=9):
-    for cell in row:
-      cell.font, cell.alignment, cell.border = f_bold, center, border
 
   start_row = 6
   current_row = start_row
@@ -621,12 +591,8 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
       ws.cell(row=current_row, column=1, value=idx)
       ws.cell(row=current_row, column=2, value=name)
       ws.cell(row=current_row, column=3, value=position)
-      ws.cell(row=current_row, column=4, value="-")
-      ws.cell(row=current_row, column=5, value="-")
-      ws.cell(row=current_row, column=6, value="-")
-      ws.cell(row=current_row, column=7, value="-")
-      ws.cell(row=current_row, column=8, value="-")
-      ws.cell(row=current_row, column=9, value="-")
+      for c in range(4, 10):
+        ws.cell(row=current_row, column=c, value="-")
       
       for c in range(1, 10):
         cell = ws.cell(row=current_row, column=c)
@@ -686,30 +652,6 @@ def generate_excel(employees_list, records_dict, month_str, year_num, emp_type):
           t_line = side if r_idx == emp_start_row else None
           b_line = side if r_idx == emp_end_row else None
           cell.border = Border(left=side, right=side, top=t_line, bottom=b_line)
-
-  # ส่วนลงชื่อผู้ตรวจสอบ (จัดบรรทัดให้อยู่ในแถวเดียวกันพอดีเป๊ะตามต้นฉบับ)
-  sig_row = current_row + 2
-  ws.merge_cells(f"E{sig_row}:G{sig_row}")
-  ws[f"E{sig_row}"] = "(ลงชื่อ)...................................................."
-  ws[f"E{sig_row}"].font = f_normal
-  ws[f"E{sig_row}"].alignment = Alignment(horizontal="right", vertical="center")
-
-  ws.merge_cells(f"H{sig_row}:I{sig_row}")
-  ws[f"H{sig_row}"] = "ผู้ตรวจสอบ"
-  ws[f"H{sig_row}"].font = f_normal
-  ws[f"H{sig_row}"].alignment = Alignment(horizontal="left", vertical="center")
-
-  name_row = sig_row + 2
-  ws.merge_cells(f"F{name_row}:I{name_row}")
-  cell_name = ws[f"F{name_row}"]
-  cell_name.value = "(นายวงค์สกุล เข่งคุ้ม)"
-  cell_name.font, cell_name.alignment = f_normal, center
-
-  pos_row = name_row + 1
-  ws.merge_cells(f"F{pos_row}:I{pos_row}")
-  cell_pos = ws[f"F{pos_row}"]
-  cell_pos.value = "ตำแหน่ง นักทรัพยากรบุคคลปฏิบัติการ"
-  cell_pos.font, cell_pos.alignment = f_normal, center
 
   buf = io.BytesIO()
   wb.save(buf)
