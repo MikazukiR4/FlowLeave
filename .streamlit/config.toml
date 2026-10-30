@@ -1,0 +1,9 @@
+# FlowLeave theme - muted government official palette
+# NOTE: key names verified against this machine's Streamlit version (see --config.help)
+
+[theme]
+baseTheme = "light"
+primaryColor = "#1F4E79"
+secondaryBackgroundColor = "#F0F2F6"
+backgroundColor = "#FFFFFF"
+textColor = "#26272C"

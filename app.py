@@ -1,4 +1,6 @@
 import calendar
+import json
+from pathlib import Path
 from datetime import datetime, timedelta
 import io
 import os
@@ -94,6 +96,55 @@ def format_thai_date(date_obj):
 
 
 # -------------------------------------------------------------------------
+# Auto-save (B4): data persists even after page/browser restart
+# -------------------------------------------------------------------------
+SAVE_FILE = Path(__file__).resolve().parent / "flowleave_data.json"
+
+
+def load_saved_data():
+  """Read saved employee data from file .json (if file exists)"""
+  try:
+    with open(SAVE_FILE, encoding="utf-8") as f:
+      raw = json.load(f)
+    master = raw.get("master", {})
+    records = {
+      name: [
+        {
+          "start": datetime.strptime(rec["start"], "%Y-%m-%d").date(),
+          "end": datetime.strptime(rec["end"], "%Y-%m-%d").date(),
+          "category": rec["category"],
+          "days": rec["days"],
+          "note": rec.get("note", "-"),
+        }
+        for rec in recs
+      ]
+      for name, recs in raw.get("records", {}).items()
+    }
+    return master, records
+  except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+    return {}, {}
+
+
+def save_all_data():
+  """Auto-save employee data + leave records to file .json"""
+  payload = {
+    "master": DEFAULT_EMPLOYEES,
+    "records": {
+      name: [
+        {**rec, "start": str(rec["start"]), "end": str(rec["end"])}
+        for rec in recs
+      ]
+      for name, recs in st.session_state.leave_records.items()
+    },
+  }
+  try:
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+      json.dump(payload, f, ensure_ascii=False, indent=2)
+  except OSError:
+    st.warning("Cannot save data file — check your folder permissions")
+
+
+# -------------------------------------------------------------------------
 # ส่วนหัว: เลือกเดือน ปี และประเภทพนักงาน
 # -------------------------------------------------------------------------
 with st.sidebar:
@@ -135,13 +186,22 @@ month_end_date = datetime(
 # -------------------------------------------------------------------------
 # Session State Management
 # -------------------------------------------------------------------------
-if (
-    "current_emp_type" not in st.session_state
-    or st.session_state.current_emp_type != employee_type
-):
-  st.session_state.current_emp_type = employee_type
-  emp_list = DEFAULT_EMPLOYEES.get(employee_type, [])
-  st.session_state.leave_records = {emp["name"]: [] for emp in emp_list}
+# Load data from save file so employee list edits persist across page opens
+_saved_master, _saved_records = load_saved_data()
+if _saved_master:
+  DEFAULT_EMPLOYEES.clear()
+  DEFAULT_EMPLOYEES.update(_saved_master)
+
+if "leave_records" not in st.session_state:
+  st.session_state.leave_records = {}
+
+for name, recs in _saved_records.items():
+  st.session_state.leave_records.setdefault(name, recs)
+
+# Ensure employees of current type have a record list
+# (do not clear data when changing employee type)
+for emp in DEFAULT_EMPLOYEES.get(employee_type, []):
+  st.session_state.leave_records.setdefault(emp["name"], [])
 
 if "selected_employee" not in st.session_state:
   st.session_state.selected_employee = None
@@ -168,11 +228,16 @@ def build_summary_dataframe():
           "หมายเหตุ": "-",
       })
     else:
-      starts = ", ".join([format_thai_date(r["start"]) for r in records])
-      ends = ", ".join([format_thai_date(r["end"]) for r in records])
-      notes = ", ".join([r["note"] for r in records if r["note"] != "-"])
-      if not notes:
-        notes = "-"
+      starts = "\n".join([format_thai_date(r["start"]) for r in records])
+      ends = "\n".join([format_thai_date(r["end"]) for r in records])
+      # One line per range (keep "-" placeholder) so from/to/note align row-per-row
+      notes = "\n".join(
+          [
+              f"{(r['note'] if r['note'] and r['note'] != '-' else '-')} "
+              f"({r['days']} วัน)"
+              for r in records
+          ]
+      )
 
       total_sick = sum([r["days"] for r in records if r["category"] == "ลาป่วย"])
       total_kit = sum([r["days"] for r in records if r["category"] == "ลากิจ"])
@@ -224,9 +289,9 @@ def open_leave_dialog(emp_name):
       with cols[4]:
         if st.button("🗑️ ลบ", key=f"del_rec_{emp_name}_{idx}"):
           st.session_state.leave_records[emp_name].pop(idx)
+          save_all_data()
           st.success("ลบรายการสำเร็จ!")
           st.rerun()
-
   st.markdown("---")
   st.markdown("#### ➕ เพิ่มรายการลาใหม่:")
 
@@ -294,9 +359,10 @@ def open_leave_dialog(emp_name):
         "note": custom_note if custom_note else "-",
     }
     st.session_state.leave_records[emp_name].append(new_entry)
-    st.success("เพิ่มรายการลาสำเร็จ!")
+    save_all_data()
+    st.success("เพ่มิรายกhardสำเร็จ —data automatic saved.")
     st.rerun()
-
+    st.success("Save item successfully - data saved automatically.")
 
 # -------------------------------------------------------------------------
 # 4. ตารางแสดงข้อมูลหลักและเรียก Dialog
@@ -307,6 +373,11 @@ st.markdown(
 )
 
 df_display = build_summary_dataframe()
+if df_display.empty:
+  st.info(
+      "📭 No personnel data found in this group. "
+      "➕ Add new personnel from the menu below."
+  )
 event = st.dataframe(
     df_display,
     use_container_width=True,
@@ -333,13 +404,14 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
       new_p = st.text_input("ตำแหน่งใหม่")
       if st.form_submit_button("➕ เพิ่มพนักงาน") and new_n:
         if new_n not in st.session_state.leave_records:
+          save_all_data()
           st.session_state.leave_records[new_n] = []
           DEFAULT_EMPLOYEES[employee_type].append(
               {"name": new_n, "position": new_p or "-"}
           )
           st.success("เพิ่มรายชื่อสำเร็จ!")
           st.rerun()
-        else:
+          st.warning("This personnel is already in the system")
           st.warning("มีชื่อนี้อยู่ในระบบแล้ว")
   with del_col:
     current_names = [emp["name"] for emp in DEFAULT_EMPLOYEES.get(employee_type, [])]
@@ -352,6 +424,7 @@ with st.expander("➕ เพิ่มรายชื่อพนักงาน�
               for emp in DEFAULT_EMPLOYEES[employee_type]
               if emp["name"] != del_n
           ]
+          save_all_data()
           if del_n in st.session_state.leave_records:
             del st.session_state.leave_records[del_n]
           st.success("ลบรายชื่อสำเร็จ!")
@@ -382,18 +455,18 @@ def generate_excel_template(df, month, year, emp_type):
   align_center = Alignment(
       horizontal="center", vertical="center", wrap_text=True
   )
-  align_left = Alignment(horizontal="left", vertical="center")
+  align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
   col_widths = {
       "A": 6,
       "B": 28,
       "C": 42,
-      "D": 16,
-      "E": 16,
+      "D": 20,
+      "E": 20,
       "F": 12,
       "G": 12,
       "H": 12,
-      "I": 22,
+      "I": 28,
   }
   for col, width in col_widths.items():
     ws.column_dimensions[col].width = width
@@ -497,6 +570,6 @@ if st.button("📥 สร้างและดาวน์โหลดไฟล�
       ),
   )
   st.success(
-      "สร้างไฟล์ Excel สำเร็จ! รูปแบบถูกต้องตามมาตรฐานงานสารบรรณราชการเรียบร้อย"
-      "ครับ"
-  )
+      "Excel file is ready - click '💾 Save file .xlsx to computer' "
+        "to save to your computer."
+    )
